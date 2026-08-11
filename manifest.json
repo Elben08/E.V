@@ -1,0 +1,19 @@
+{
+  "name": "E.V",
+  "short_name": "E.V",
+  "description": "E.V - your personal AI assistant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070b11",
+  "theme_color": "#070b11",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

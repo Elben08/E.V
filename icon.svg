@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#122433"/>
+      <stop offset="100%" stop-color="#070b11"/>
+    </radialGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="35%" stop-color="#bff3ff"/>
+      <stop offset="75%" stop-color="#39c6ff"/>
+      <stop offset="100%" stop-color="#0f7fb8"/>
+    </radialGradient>
+  </defs>
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#123a52" stroke-width="26"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#1d5c80" stroke-width="14" stroke-dasharray="70 34" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="112" fill="none" stroke="#2a8bbf" stroke-width="10" stroke-dasharray="40 22" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="72" fill="url(#core)"/>
+  <circle cx="256" cy="256" r="72" fill="none" stroke="#bff3ff" stroke-width="6"/>
+  <path d="M256 214 v28 M256 282 v28 M214 256 h28 M282 256 h28" stroke="#fff" stroke-width="10" stroke-linecap="round" opacity="0.95"/>
+</svg>

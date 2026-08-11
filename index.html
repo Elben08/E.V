@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#070b11">
+  <meta name="description" content="E.V - your personal AI assistant">
+  <title>E.V</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">E.V</span>
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status-text" class="status-text">online</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-memory" class="icon-btn" aria-label="Memory">&#128214;</button>
+      <button id="btn-settings" class="icon-btn" aria-label="Settings">&#9881;</button>
+    </div>
+  </header>
+
+  <main id="chat" class="chat" aria-live="polite"></main>
+
+  <footer class="inputbar">
+    <input id="text-input" type="text" placeholder="Type or tap the arc reactor to speak..." autocomplete="off" enterkeyhint="send">
+    <button id="btn-send" class="icon-btn send-btn" aria-label="Send">&#10148;</button>
+    <div id="reactor-wrap" class="reactor-wrap">
+      <div id="reactor" class="reactor" role="button" aria-label="Talk to E.V" aria-pressed="false">
+        <div class="reactor-core"></div>
+        <div class="reactor-ring ring-1"></div>
+        <div class="reactor-ring ring-2"></div>
+        <div class="reactor-ring ring-3"></div>
+        <div class="reactor-ring ring-4"></div>
+        <div class="reactor-mic">&#9835;</div>
+      </div>
+    </div>
+  </footer>
+
+  <div id="modal-settings" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-card">
+      <h2 id="settings-title">E.V Settings</h2>
+      <label>Gemini API key
+        <input id="set-gemini" type="password" placeholder="AIza... (free at aistudio.google.com)" autocomplete="off">
+      </label>
+      <label>Groq API key
+        <input id="set-groq" type="password" placeholder="gsk_... (free at console.groq.com)" autocomplete="off">
+      </label>
+      <label>Default provider
+        <select id="set-provider">
+          <option value="auto">Auto (Gemini, fallback Groq)</option>
+          <option value="gemini">Gemini only</option>
+          <option value="groq">Groq only</option>
+        </select>
+      </label>
+      <label>Privacy routing
+        <select id="set-privacy">
+          <option value="auto">Full pipeline (auto-detect sensitive)</option>
+          <option value="groq">Always route to Groq</option>
+          <option value="manual">Manual override only</option>
+        </select>
+      </label>
+      <label class="check-row">
+        <input id="set-voice" type="checkbox">
+        <span>Speak responses aloud</span>
+      </label>
+      <div class="modal-actions">
+        <button id="btn-settings-cancel" class="btn ghost">Cancel</button>
+        <button id="btn-settings-save" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-memory" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="memory-title">
+    <div class="modal-card">
+      <h2 id="memory-title">E.V Memory</h2>
+      <p class="muted">Things E.V remembers about you. Sensitive entries are only used with Groq.</p>
+      <ul id="memory-list" class="memory-list"></ul>
+      <div class="modal-actions">
+        <button id="btn-memory-clear" class="btn danger">Clear all</button>
+        <button id="btn-memory-close" class="btn primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
