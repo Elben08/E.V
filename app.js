@@ -7,8 +7,20 @@ const SYSTEM_PROMPT = [
   'Be honest about your limits. If you cannot do something, say so briefly and suggest an alternative.'
 ].join('\n');
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const GEMINI_MODELS = [
+  { id: 'gemini-3.5-flash', vision: true },
+  { id: 'gemini-3.6-flash', vision: true },
+  { id: 'gemini-3.1-flash-lite', vision: true },
+  { id: 'gemini-2.5-flash', vision: true },
+  { id: 'gemini-2.5-flash-lite', vision: true }
+];
+const GROQ_MODELS = [
+  { id: 'openai/gpt-oss-120b', vision: false },
+  { id: 'qwen/qwen3.6-27b', vision: true },
+  { id: 'openai/gpt-oss-20b', vision: false },
+  { id: 'llama-3.3-70b-versatile', vision: false },
+  { id: 'llama-3.1-8b-instant', vision: false }
+];
 
 const PRIVATE_ON_RE = /\b(this is private|private mode on|secure this conversation|secure this session|enter private mode)\b/i;
 const PRIVATE_OFF_RE = /\b(private mode off|not private anymore|this is not private|declassify|exit private mode)\b/i;
@@ -75,7 +87,9 @@ const STORAGE = {
   settings: 'ev.settings',
   history: 'ev.history',
   facts: 'ev.facts',
-  privateMode: 'ev.privateMode'
+  privateMode: 'ev.privateMode',
+  geminiModel: 'ev.geminiModel',
+  groqModel: 'ev.groqModel'
 };
 
 const DEFAULT_SETTINGS = {
@@ -111,11 +125,209 @@ let settings = loadSettings();
 let history = loadJSON(STORAGE.history, []);
 let facts = loadJSON(STORAGE.facts, []);
 let privateMode = loadJSON(STORAGE.privateMode, false);
+const MAX_ATTACHMENTS = 5;
+const MAX_IMG_MB = 7;
+const MAX_PDF_MB = 20;
+const MAX_TOTAL_MB = 20;
+const IMG_MIME_RE = /^image\/(jpeg|png|webp|heic|heif)$/;
+
+let pendingAttachments = [];
+
+function attachLimits() {
+  const limits = { maxCount: MAX_ATTACHMENTS, maxTotalMB: MAX_TOTAL_MB };
+  const total = pendingAttachments.reduce((sum, a) => sum + a.sizeMB, 0);
+  return Object.assign(limits, { usedMB: total, remainingMB: MAX_TOTAL_MB - total });
+}
+
+function attachmentError(file, kind) {
+  if (pendingAttachments.length >= MAX_ATTACHMENTS) return 'Up to ' + MAX_ATTACHMENTS + ' attachments allowed';
+  const sizeMB = file.size / (1024 * 1024);
+  if (kind === 'image' && sizeMB > MAX_IMG_MB) return 'Image too large (max ' + MAX_IMG_MB + ' MB)';
+  if (kind === 'pdf' && sizeMB > MAX_PDF_MB) return 'PDF too large (max ' + MAX_PDF_MB + ' MB)';
+  if (attachLimits().remainingMB < sizeMB) return 'Total attachment size exceeds ' + MAX_TOTAL_MB + ' MB';
+  return null;
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderAttachTray() {
+  const tray = document.getElementById('attach-tray');
+  if (!tray) return;
+  tray.innerHTML = '';
+  pendingAttachments.forEach((a, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'attach-chip' + (a.kind === 'pdf' ? ' attach-pdf' : '');
+    chip.title = a.name + ' (' + a.sizeMB.toFixed(1) + ' MB)';
+    if (a.kind === 'image') {
+      const thumb = document.createElement('img');
+      thumb.src = a.dataURL;
+      thumb.alt = '';
+      thumb.className = 'attach-thumb';
+      chip.appendChild(thumb);
+    } else {
+      const icon = document.createElement('span');
+      icon.className = 'attach-pdf-icon';
+      icon.textContent = 'PDF';
+      chip.appendChild(icon);
+    }
+    const label = document.createElement('span');
+    label.className = 'attach-name';
+    label.textContent = a.name;
+    chip.appendChild(label);
+    const x = document.createElement('span');
+    x.className = 'attach-remove';
+    x.textContent = '\u00d7';
+    x.setAttribute('aria-label', 'Remove ' + a.name);
+    x.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      removeAttachment(i);
+    });
+    chip.appendChild(x);
+    tray.appendChild(chip);
+  });
+  tray.classList.toggle('hidden', !pendingAttachments.length);
+  updateSendDisabled();
+}
+
+function removeAttachment(i) {
+  pendingAttachments.splice(i, 1);
+  renderAttachTray();
+}
+
+function setPendingAttachments(list) {
+  pendingAttachments = list;
+  renderAttachTray();
+}
+
+function updateSendDisabled() {
+  const sendBtn = el['btn-send'];
+  if (!sendBtn) return;
+  const canSend = !busy && (el['text-input'].value.trim() || pendingAttachments.length > 0);
+  sendBtn.disabled = !canSend;
+  sendBtn.classList.toggle('disabled', !canSend);
+}
+
+function handleFileInput(files) {
+  if (!files || !files.length) return;
+  const accepted = [];
+  for (const file of files) {
+    const mime = file.type.toLowerCase();
+    const kind = IMG_MIME_RE.test(mime) ? 'image' : (mime === 'application/pdf' ? 'pdf' : null);
+    if (!kind) {
+      toast('Unsupported file type');
+      continue;
+    }
+    const sizeMB = file.size / (1024 * 1024);
+    const err = attachmentError(file, kind);
+    if (err) {
+      toast(err);
+      continue;
+    }
+    if (accepted.length + pendingAttachments.length >= MAX_ATTACHMENTS) {
+      toast('Up to ' + MAX_ATTACHMENTS + ' attachments allowed');
+      break;
+    }
+    if (attachLimits().remainingMB < sizeMB) {
+      toast('Total attachment size exceeds ' + MAX_TOTAL_MB + ' MB');
+      break;
+    }
+    accepted.push({ file: file, kind: kind, name: file.name, mime: mime, sizeMB: sizeMB, dataURL: null });
+  }
+  if (!accepted.length) return;
+  let remaining = accepted;
+  const readNext = () => {
+    const a = remaining[0];
+    readFileAsDataURL(a.file).then((dataURL) => {
+      a.dataURL = dataURL;
+      remaining = remaining.slice(1);
+      if (remaining.length) {
+        readNext();
+      } else {
+        setPendingAttachments(pendingAttachments.concat(accepted));
+      }
+    }).catch(() => {
+      toast('Could not read ' + a.name);
+      remaining = remaining.slice(1);
+      if (remaining.length) readNext();
+      else setPendingAttachments(pendingAttachments.concat(accepted));
+    });
+  };
+  readNext();
+}
+
+function getAttachmentText() {
+  return pendingAttachments.length
+    ? '[Attached file: ' + pendingAttachments.map((a) => a.name).join(', ') + ']'
+    : '';
+}
+
 let busy = false;
+let activeModels = {
+  gemini: loadJSON(STORAGE.geminiModel, 0),
+  groq: loadJSON(STORAGE.groqModel, 0)
+};
+
+function modelList(provider) {
+  return provider === 'gemini' ? GEMINI_MODELS : GROQ_MODELS;
+}
+
+function modelStoreKey(provider) {
+  return provider === 'gemini' ? STORAGE.geminiModel : STORAGE.groqModel;
+}
+
+function clampModelIndex(list, index) {
+  return typeof index === 'number' && index >= 0 && index < list.length ? index : 0;
+}
+
+function getActiveModel(provider) {
+  const list = modelList(provider);
+  return list[clampModelIndex(list, activeModels[provider])].id;
+}
+
+function setActiveModel(provider, index) {
+  const list = modelList(provider);
+  const i = clampModelIndex(list, index);
+  activeModels[provider] = i;
+  saveJSON(modelStoreKey(provider), i);
+  return list[i].id;
+}
+
+function resetActiveModel(provider) {
+  return setActiveModel(provider, 0);
+}
+
+function modelLabel(provider) {
+  const list = modelList(provider);
+  const cur = getActiveModel(provider);
+  return cur + (list[0].id === cur ? ' (default)' : ' (fallback)');
+}
+
+function firstVisionIndex(provider) {
+  const list = modelList(provider);
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].vision) return i;
+  }
+  return -1;
+}
+
+function isModelUnavailable(message) {
+  if (!message) return false;
+  if (/api key|billing|quota|rate ?limit|permission|forbidden|denied|network|cors|failed to fetch/i.test(message)) return false;
+  return /(?:^|\s)404\b|no longer available|deprecated|retired|shut ?down|does not exist|do not have access|not found|model.*not (?:found|available|supported)|unavailable/i.test(message);
+}
 
 const el = {};
-const els = ['chat', 'text-input', 'btn-send', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
+const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'attach-tray', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
   'modal-settings', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice',
+  'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
@@ -159,25 +371,39 @@ function buildSystem(provider) {
   return out;
 }
 
-function buildMessages(provider, userText) {
+function buildMessages(provider, userText, attachments) {
+  const atts = attachments || [];
   if (provider === 'gemini') {
     const contents = [];
     for (const h of history) {
       if (h.sensitive) continue;
       contents.push({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.text }] });
     }
-    contents.push({ role: 'user', parts: [{ text: userText }] });
+    const parts = [];
+    for (const a of atts) {
+      const mime = a.mime || (a.kind === 'pdf' ? 'application/pdf' : 'application/octet-stream');
+      parts.push({ inlineData: { mimeType: mime, data: a.dataURL.split(',')[1] } });
+    }
+    parts.push({ text: userText });
+    contents.push({ role: 'user', parts: parts });
     return contents;
   }
   const messages = [{ role: 'system', content: buildSystem(provider) }];
   for (const h of history) {
     messages.push({ role: h.role === 'user' ? 'user' : 'assistant', content: h.text });
   }
-  messages.push({ role: 'user', content: userText });
+  const content = [];
+  for (const a of atts) {
+    if (a.kind === 'image') {
+      content.push({ type: 'image_url', image_url: { url: a.dataURL } });
+    }
+  }
+  content.push({ type: 'text', text: userText });
+  messages.push({ role: 'user', content: content });
   return messages;
 }
 
-async function readSSE(response, onData) {
+async function readSSE(response, onData, onError) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -192,47 +418,112 @@ async function readSSE(response, onData) {
       if (line.indexOf('data:') === 0) {
         const payload = line.slice(5).trim();
         if (!payload || payload === '[DONE]') continue;
-        try { onData(JSON.parse(payload)); } catch (e) { /* skip partial */ }
+        try {
+          const json = JSON.parse(payload);
+          if (json && json.error) {
+            if (onError) onError(json.error);
+            else return;
+          }
+          onData(json);
+        } catch (e) { /* skip partial */ }
       }
     }
   }
 }
 
 async function sendToGemini(messages, onToken) {
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL +
-    ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(settings.geminiKey);
+  const key = encodeURIComponent(settings.geminiKey);
+  const headers = { 'Content-Type': 'application/json' };
   const body = {
     contents: messages,
     systemInstruction: { parts: [{ text: buildSystem('gemini') }] },
     generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
     tools: [{ googleSearch: {} }]
   };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (res.status === 429) throw new Error('RATE_LIMIT');
-  if (!res.ok) {
-    const text = await res.text();
-    if (text.indexOf('google_search') !== -1 || res.status === 400) {
-      delete body.tools;
-      const retry = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+
+  const geminiError = async (res) => {
+    let msg = 'HTTP ' + res.status;
+    try {
+      const j = await res.json();
+      if (j && j.error && j.error.message) msg = j.error.message;
+    } catch (e) { /* fall back to status */ }
+    return msg;
+  };
+
+  const attempt = async (model, endpoint, useTools) => {
+    const b = JSON.parse(JSON.stringify(body));
+    if (!useTools) delete b.tools;
+    const base = 'https://generativelanguage.googleapis.com/v1beta/models/' + model;
+    const sep = endpoint.indexOf('?') !== -1 ? '&' : '?';
+    const res = await fetch(base + ':' + endpoint + sep + 'key=' + key, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(b)
+    });
+    if (res.status === 429) throw new Error('RATE_LIMIT');
+    if (!res.ok) throw new Error(await geminiError(res));
+    if (endpoint.indexOf('stream') !== -1) {
+      await readSSE(res, onToken, (err) => {
+        throw new Error((err && err.message) || 'Gemini stream error');
       });
-      if (retry.status === 429) throw new Error('RATE_LIMIT');
-      if (!retry.ok) throw new Error('Gemini ' + retry.status + ': ' + (await retry.text()).slice(0, 160));
-      await readSSE(retry, onToken);
-      return;
+    } else {
+      const json = await res.json();
+      const parts = json.candidates && json.candidates[0] && json.candidates[0].content
+        ? json.candidates[0].content.parts : [];
+      const text = parts.map((p) => p.text || '').join('');
+      if (text) onToken(text);
     }
-    throw new Error('Gemini ' + res.status + ': ' + text.slice(0, 160));
+  };
+
+  const start = clampModelIndex(GEMINI_MODELS, activeModels.gemini);
+  let lastErr = null;
+  for (let i = start; i < GEMINI_MODELS.length; i++) {
+    const model = GEMINI_MODELS[i].id;
+    try {
+      await attempt(model, 'streamGenerateContent?alt=sse', true);
+    } catch (e) {
+      if (e.message === 'RATE_LIMIT') throw e;
+      lastErr = e;
+      if (!isModelUnavailable(e.message)) {
+        try {
+          await attempt(model, 'generateContent', false);
+        } catch (e2) {
+          if (e2.message === 'RATE_LIMIT') throw e2;
+          lastErr = e2;
+          if (isModelUnavailable(e2.message)) continue;
+          throw e2;
+        }
+      } else {
+        continue;
+      }
+    }
+    setActiveModel('gemini', i);
+    return;
   }
-  await readSSE(res, onToken);
+  throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
-async function sendToGroq(messages, onToken) {
+async function sendToGroq(messages, onToken, startIndex) {
+  const start = typeof startIndex === 'number' && startIndex >= 0 && startIndex < GROQ_MODELS.length
+    ? startIndex
+    : clampModelIndex(GROQ_MODELS, activeModels.groq);
+  let lastErr = null;
+  for (let i = start; i < GROQ_MODELS.length; i++) {
+    try {
+      await groqAttempt(GROQ_MODELS[i].id, messages, onToken);
+    } catch (e) {
+      if (e.message === 'RATE_LIMIT') throw e;
+      lastErr = e;
+      if (!isModelUnavailable(e.message)) throw e;
+      continue;
+    }
+    setActiveModel('groq', i);
+    return;
+  }
+  throw new Error('All Groq models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
+}
+
+async function groqAttempt(model, messages, onToken) {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -240,7 +531,7 @@ async function sendToGroq(messages, onToken) {
       'Authorization': 'Bearer ' + settings.groqKey
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: model,
       messages: messages,
       temperature: 0.7,
       max_tokens: 1024,
@@ -248,10 +539,19 @@ async function sendToGroq(messages, onToken) {
     })
   });
   if (res.status === 429) throw new Error('RATE_LIMIT');
-  if (!res.ok) throw new Error('Groq ' + res.status + ': ' + (await res.text()).slice(0, 160));
+  if (!res.ok) {
+    let msg = 'HTTP ' + res.status;
+    try {
+      const j = await res.json();
+      if (j && j.error && j.error.message) msg = j.error.message;
+    } catch (e) { /* status only */ }
+    throw new Error(msg);
+  }
   await readSSE(res, (j) => {
     const d = j.choices && j.choices[0] && j.choices[0].delta;
     if (d && typeof d.content === 'string' && d.content) onToken(d.content);
+  }, (err) => {
+    throw new Error((err && err.message) || 'Groq stream error');
   });
 }
 
@@ -303,6 +603,7 @@ function addMsg(role, text, opts) {
 function fail(message) {
   busy = false;
   setStatus('online', '');
+  updateSendDisabled();
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   addMsg('ev', message, { error: true });
 }
@@ -360,7 +661,7 @@ function toggleListening() {
   recognition.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
-      else el['text-input'].value = e.results[i][0].transcript;
+      else { el['text-input'].value = e.results[i][0].transcript; updateSendDisabled(); }
     }
   };
   recognition.onerror = (e) => {
@@ -451,8 +752,9 @@ function extractFacts(text) {
 }
 
 async function send(rawText) {
+  if (busy) return;
   const text = rawText.trim();
-  if (!text || busy) return;
+  if (!text && !pendingAttachments.length) return;
   if (PRIVATE_ON_RE.test(text)) { privateMode = true; saveJSON(STORAGE.privateMode, privateMode); toast('Private session on. Routing to Groq.'); }
   if (PRIVATE_OFF_RE.test(text)) { privateMode = false; saveJSON(STORAGE.privateMode, privateMode); toast('Private session off.'); }
 
@@ -460,16 +762,27 @@ async function send(rawText) {
   try { cmdReply = handlePhoneCommands(text); } catch (e) { /* keep going */ }
 
   const analysis = analyzeSensitivity(text);
-  addMsg('user', text);
-  history.push({ role: 'user', text: text, sensitive: analysis.sensitive });
+  const attachText = pendingAttachments.length ? ' ' + getAttachmentText() : '';
+  addMsg('user', text + (attachText ? '\n' + attachText.trim() : ''));
+  history.push({ role: 'user', text: text + attachText, sensitive: analysis.sensitive });
   trimHistory();
 
   const note = cmdReply ? '\n[Handled by app: ' + cmdReply + ']' : '';
   const { provider, reason } = chooseProvider(analysis);
-  let usedLabel = provider === 'gemini' ? 'gemini' : 'groq' + (reason ? ' · ' + reason : '');
-  const messages = buildMessages(provider, text + note);
+
+  const hasPdf = pendingAttachments.some((a) => a.kind === 'pdf');
+  if (hasPdf && provider === 'groq') {
+    toast('Groq can\u2019t read PDFs. Remove the PDF or switch provider to Gemini.');
+    return;
+  }
+
+  let usedLabel = provider === 'gemini'
+    ? 'gemini · ' + getActiveModel('gemini')
+    : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
+  const messages = buildMessages(provider, text + note, pendingAttachments);
 
   busy = true;
+  updateSendDisabled();
   const statusLabel = provider === 'groq' && (reason === 'sensitive' || reason === 'private')
     ? 'private route' : 'thinking';
   setStatus(statusLabel, 'busy');
@@ -482,12 +795,18 @@ async function send(rawText) {
     bodyEl.textContent = reply;
     scrollChat();
   };
+  const groqStart = () => (pendingAttachments.length ? firstVisionIndex('groq') : undefined);
   const fallbackToGroq = async (geminiError) => {
     if (!settings.groqKey) throw new Error(geminiError + ' and no Groq key is set.');
-    usedLabel = 'groq · fallback';
+    if (hasPdf) throw new Error(geminiError + ' (and PDF attachments can\u2019t fall back to Groq).');
+    usedLabel = 'groq · fallback · ' + getActiveModel('groq');
     bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
+    const noteEl = document.createElement('div');
+    noteEl.className = 'fallback-note';
+    noteEl.textContent = 'Gemini error: ' + geminiError;
+    bubble.appendChild(noteEl);
     toast('Gemini: ' + geminiError + ' — using Groq.');
-    await sendToGroq(buildMessages('groq', text + note), token);
+    await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart());
   };
 
   if (provider === 'gemini') {
@@ -505,7 +824,7 @@ async function send(rawText) {
   } else {
     if (!settings.groqKey) { fail('Add your Groq API key in Settings (gear icon).'); return; }
     try {
-      await sendToGroq(messages, token);
+      await sendToGroq(messages, token, groqStart());
     } catch (err) {
       fail(err.message);
       return;
@@ -513,14 +832,19 @@ async function send(rawText) {
   }
 
   busy = false;
+  updateSendDisabled();
   setStatus('online', '');
   const cleaned = reply.trim();
   if (!cleaned) { fail('E.V received nothing back. Try again.'); return; }
+  usedLabel = provider === 'gemini'
+    ? 'gemini · ' + getActiveModel('gemini')
+    : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
   bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
   history.push({ role: 'ev', text: cleaned, sensitive: analysis.sensitive });
   trimHistory();
   saveJSON(STORAGE.history, history);
   extractFacts(text);
+  setPendingAttachments([]);
   if (settings.voice) speak(cleaned);
 }
 
@@ -530,6 +854,8 @@ function openSettings() {
   el['set-provider'].value = settings.provider;
   el['set-privacy'].value = settings.privacy;
   el['set-voice'].checked = settings.voice;
+  el['gemini-model-label'].textContent = modelLabel('gemini');
+  el['groq-model-label'].textContent = modelLabel('groq');
   show(el['modal-settings']);
 }
 
@@ -543,6 +869,86 @@ function saveSettingsForm() {
   hide(el['modal-settings']);
   toast('Settings saved.');
   setReactor('');
+}
+
+async function testConnections() {
+  const out = el['test-result'];
+  out.classList.remove('hidden');
+  out.textContent = 'Testing...';
+  const lines = [];
+  const geminiKey = el['set-gemini'].value.trim();
+  const groqKey = el['set-groq'].value.trim();
+
+  const describe = async (res) => {
+    if (res.status === 429) return 'RATE LIMITED (quota reached)';
+    if (res.ok) return 'OK (connected)';
+    let msg = 'HTTP ' + res.status;
+    try {
+      const j = await res.json();
+      if (j && j.error && j.error.message) msg = j.error.message;
+    } catch (e) { /* status only */ }
+    return msg;
+  };
+
+  if (geminiKey) {
+    let found = false;
+    for (const m of GEMINI_MODELS) {
+      try {
+        const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + m.id +
+          ':generateContent?key=' + encodeURIComponent(geminiKey), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'Reply with the single word OK' }] }],
+            generationConfig: { maxOutputTokens: 10 }
+          })
+        });
+        lines.push('Gemini ' + m.id + ': ' + await describe(res));
+        if (res.ok) {
+          setActiveModel('gemini', GEMINI_MODELS.indexOf(m));
+          lines.push('→ active Gemini model set to ' + m.id);
+          found = true;
+          break;
+        }
+      } catch (e) {
+        lines.push('Gemini ' + m.id + ': network/CORS error — ' + e.message);
+      }
+    }
+    if (!found) lines.push('→ no working Gemini model found');
+  } else {
+    lines.push('Gemini: no key entered');
+  }
+
+  if (groqKey) {
+    let found = false;
+    for (const m of GROQ_MODELS) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + groqKey },
+          body: JSON.stringify({
+            model: m.id,
+            messages: [{ role: 'user', content: 'Reply with the single word OK' }],
+            max_tokens: 5
+          })
+        });
+        lines.push('Groq ' + m.id + ': ' + await describe(res));
+        if (res.ok) {
+          setActiveModel('groq', GROQ_MODELS.indexOf(m));
+          lines.push('→ active Groq model set to ' + m.id);
+          found = true;
+          break;
+        }
+      } catch (e) {
+        lines.push('Groq ' + m.id + ': network/CORS error — ' + e.message);
+      }
+    }
+    if (!found) lines.push('→ no working Groq model found');
+  } else {
+    lines.push('Groq: no key entered');
+  }
+
+  out.textContent = lines.join('\n');
 }
 
 function renderMemoryList() {
@@ -585,16 +991,32 @@ function init() {
   el.reactor.addEventListener('click', toggleListening);
   el['btn-send'].addEventListener('click', () => {
     const v = el['text-input'].value.trim();
-    if (!v) return;
+    if (!v && !pendingAttachments.length) return;
     el['text-input'].value = '';
+    updateSendDisabled();
     send(v);
   });
+  el['text-input'].addEventListener('input', updateSendDisabled);
   el['text-input'].addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); el['btn-send'].click(); }
   });
+  el['btn-attach'].addEventListener('click', () => el['file-input'].click());
+  el['file-input'].addEventListener('change', () => {
+    handleFileInput(el['file-input'].files);
+    el['file-input'].value = '';
+  });
+  window.addEventListener('beforeunload', () => { if (pendingAttachments.length) setPendingAttachments([]); });
   el['btn-settings'].addEventListener('click', openSettings);
   el['btn-settings-save'].addEventListener('click', saveSettingsForm);
   el['btn-settings-cancel'].addEventListener('click', () => hide(el['modal-settings']));
+  el['btn-test'].addEventListener('click', testConnections);
+  const resetModel = (provider) => {
+    const m = resetActiveModel(provider);
+    el[provider === 'gemini' ? 'gemini-model-label' : 'groq-model-label'].textContent = modelLabel(provider);
+    toast((provider === 'gemini' ? 'Gemini' : 'Groq') + ' model reset to ' + m);
+  };
+  el['btn-reset-gemini'].addEventListener('click', () => resetModel('gemini'));
+  el['btn-reset-groq'].addEventListener('click', () => resetModel('groq'));
   el['btn-memory'].addEventListener('click', openMemory);
   el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
   el['btn-memory-clear'].addEventListener('click', () => {

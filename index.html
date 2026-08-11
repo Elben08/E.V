@@ -27,16 +27,21 @@
   <main id="chat" class="chat" aria-live="polite"></main>
 
   <footer class="inputbar">
-    <input id="text-input" type="text" placeholder="Type or tap the arc reactor to speak..." autocomplete="off" enterkeyhint="send">
-    <button id="btn-send" class="icon-btn send-btn" aria-label="Send">&#10148;</button>
-    <div id="reactor-wrap" class="reactor-wrap">
-      <div id="reactor" class="reactor" role="button" aria-label="Talk to E.V" aria-pressed="false">
-        <div class="reactor-core"></div>
-        <div class="reactor-ring ring-1"></div>
-        <div class="reactor-ring ring-2"></div>
-        <div class="reactor-ring ring-3"></div>
-        <div class="reactor-ring ring-4"></div>
-        <div class="reactor-mic">&#9835;</div>
+    <div id="attach-tray" class="attach-tray hidden"></div>
+    <div class="input-row">
+      <button id="btn-attach" class="icon-btn" aria-label="Attach file">&#128206;</button>
+      <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" multiple class="hidden">
+      <input id="text-input" type="text" placeholder="Type or tap the arc reactor to speak..." autocomplete="off" enterkeyhint="send">
+      <button id="btn-send" class="icon-btn send-btn" aria-label="Send">&#10148;</button>
+      <div id="reactor-wrap" class="reactor-wrap">
+        <div id="reactor" class="reactor" role="button" aria-label="Talk to E.V" aria-pressed="false">
+          <div class="reactor-core"></div>
+          <div class="reactor-ring ring-1"></div>
+          <div class="reactor-ring ring-2"></div>
+          <div class="reactor-ring ring-3"></div>
+          <div class="reactor-ring ring-4"></div>
+          <div class="reactor-mic">&#9835;</div>
+        </div>
       </div>
     </div>
   </footer>
@@ -68,10 +73,22 @@
         <input id="set-voice" type="checkbox">
         <span>Speak responses aloud</span>
       </label>
+      <div class="model-row">
+        <div class="model-name">
+          Gemini: <span id="gemini-model-label">—</span><br>
+          Groq: <span id="groq-model-label">—</span>
+        </div>
+        <div class="model-actions">
+          <button id="btn-reset-gemini" class="btn ghost" type="button">Reset Gemini</button>
+          <button id="btn-reset-groq" class="btn ghost" type="button">Reset Groq</button>
+        </div>
+      </div>
       <div class="modal-actions">
+        <button id="btn-test" class="btn ghost" type="button">Test connections</button>
         <button id="btn-settings-cancel" class="btn ghost">Cancel</button>
         <button id="btn-settings-save" class="btn primary">Save</button>
       </div>
+      <pre id="test-result" class="test-result hidden"></pre>
     </div>
   </div>
 
