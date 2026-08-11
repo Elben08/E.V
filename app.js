@@ -10,7 +10,7 @@ const SYSTEM_PROMPT = [
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
-const PRIVATE_ON_RE = /\b(this is private|private mode on|secure this|enter private mode)\b/i;
+const PRIVATE_ON_RE = /\b(this is private|private mode on|secure this conversation|secure this session|enter private mode)\b/i;
 const PRIVATE_OFF_RE = /\b(private mode off|not private anymore|this is not private|declassify|exit private mode)\b/i;
 
 const PII_PATTERNS = [
@@ -21,11 +21,17 @@ const PII_PATTERNS = [
 ];
 
 const SENSITIVE_KEYWORDS = {
-  credentials: ['password', 'passcode', ' otp', 'two-factor', '2fa', 'security question', 'login', 'secret'],
+  credentials: ['password', 'passcode', 'pin', 'otp', 'two-factor', '2fa', 'security question', 'login', 'secret'],
   finance: ['bank', 'credit card', 'debit card', 'salary', 'income', 'tax return', 'taxes', 'mortgage', 'loan', 'crypto', 'wallet', 'paypal', 'investment', 'routing number', 'bank account', 'ssn'],
   health: ['medical', 'health', 'doctor', 'diagnosis', 'prescription', 'medication', 'therapy', 'psychiatrist', 'mental health', 'lab results', 'weight'],
   identity: ['address', 'passport', "driver's license", 'license plate', 'id number', 'social security', 'date of birth', 'phone number', 'ssn', 'birthday', 'my age']
 };
+
+const KEYWORD_RES = {};
+for (const cat of Object.keys(SENSITIVE_KEYWORDS)) {
+  const kws = SENSITIVE_KEYWORDS[cat].map((kw) => kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  KEYWORD_RES[cat] = new RegExp('\\b(?:' + kws.join('|') + ')\\b', 'i');
+}
 
 const ALWAYS_SENSITIVE_CATEGORIES = ['credentials', 'finance', 'health', 'identity'];
 
@@ -119,11 +125,8 @@ function analyzeSensitivity(text) {
   for (const p of PII_PATTERNS) {
     if (p.re.test(text)) hits.add(p.cat);
   }
-  const lower = ' ' + text.toLowerCase() + ' ';
-  for (const cat of Object.keys(SENSITIVE_KEYWORDS)) {
-    for (const kw of SENSITIVE_KEYWORDS[cat]) {
-      if (lower.indexOf(kw) !== -1) hits.add(cat);
-    }
+  for (const cat of Object.keys(KEYWORD_RES)) {
+    if (KEYWORD_RES[cat].test(text)) hits.add(cat);
   }
   const sensitive = hits.size > 0 && [...hits].some((c) => ALWAYS_SENSITIVE_CATEGORIES.includes(c));
   return { sensitive, categories: [...hits] };
@@ -131,13 +134,14 @@ function analyzeSensitivity(text) {
 
 function chooseProvider(analysis) {
   const p = settings.provider;
-  if (p === 'gemini') return 'gemini';
-  if (p === 'groq') return 'groq';
+  if (p === 'gemini') return { provider: 'gemini', reason: '' };
+  if (p === 'groq') return { provider: 'groq', reason: 'settings' };
   const priv = settings.privacy;
-  if (priv === 'groq') return 'groq';
-  if (priv === 'auto' && (analysis.sensitive || privateMode)) return 'groq';
-  if (priv === 'manual' && (analysis.private || privateMode)) return 'groq';
-  return 'gemini';
+  if (priv === 'groq') return { provider: 'groq', reason: 'policy' };
+  if (priv === 'auto' && analysis.sensitive) return { provider: 'groq', reason: 'sensitive' };
+  if (priv === 'auto' && privateMode) return { provider: 'groq', reason: 'private' };
+  if (priv === 'manual' && (analysis.private || privateMode)) return { provider: 'groq', reason: 'private' };
+  return { provider: 'gemini', reason: '' };
 }
 
 function visibleFacts(provider) {
@@ -461,25 +465,28 @@ async function send(rawText) {
   trimHistory();
 
   const note = cmdReply ? '\n[Handled by app: ' + cmdReply + ']' : '';
-  const provider = chooseProvider(analysis);
+  const { provider, reason } = chooseProvider(analysis);
+  let usedLabel = provider === 'gemini' ? 'gemini' : 'groq' + (reason ? ' · ' + reason : '');
   const messages = buildMessages(provider, text + note);
 
   busy = true;
-  setStatus(provider === 'groq' ? 'private route' : 'thinking', 'busy');
-  const bubble = addMsg('ev', '', { provider });
+  const statusLabel = provider === 'groq' && (reason === 'sensitive' || reason === 'private')
+    ? 'private route' : 'thinking';
+  setStatus(statusLabel, 'busy');
+  const bubble = addMsg('ev', '', { provider: usedLabel });
   const bodyEl = bubble.querySelector('.body');
 
-  let used = provider;
   let reply = '';
   const token = (chunk) => {
     reply += chunk;
     bodyEl.textContent = reply;
     scrollChat();
   };
-  const fallbackToGroq = async () => {
-    if (!settings.groqKey) throw new Error('Gemini failed and no Groq key is set.');
-    used = 'groq';
-    bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(groq fallback)</span>';
+  const fallbackToGroq = async (geminiError) => {
+    if (!settings.groqKey) throw new Error(geminiError + ' and no Groq key is set.');
+    usedLabel = 'groq · fallback';
+    bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
+    toast('Gemini: ' + geminiError + ' — using Groq.');
     await sendToGroq(buildMessages('groq', text + note), token);
   };
 
@@ -489,7 +496,7 @@ async function send(rawText) {
       await sendToGemini(messages, token);
     } catch (err) {
       try {
-        await fallbackToGroq();
+        await fallbackToGroq(err.message);
       } catch (err2) {
         fail(err2.message);
         return;
@@ -509,7 +516,7 @@ async function send(rawText) {
   setStatus('online', '');
   const cleaned = reply.trim();
   if (!cleaned) { fail('E.V received nothing back. Try again.'); return; }
-  bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + used + ')</span>';
+  bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
   history.push({ role: 'ev', text: cleaned, sensitive: analysis.sensitive });
   trimHistory();
   saveJSON(STORAGE.history, history);
