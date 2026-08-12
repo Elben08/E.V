@@ -79,10 +79,21 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
 
 ### MacroDroid — calendar lookup
 
+> These steps are for **MacroDroid 5.65+** (the action no longer uses the old `[calendar_event_title]` magic text — it outputs to a variable instead).
+
 1. Create a Macro → **Trigger: Intent Received** with action `com.ev.calendar.lookup` (Category: default).
-2. **Action: Get Calendar Events** (from the next/upcoming event; this fills the `[calendar_event_title]` etc. variables).
-3. **Action: Open Website** → `https://elben08.github.io/E.V/#next=[calendar_event_title]` (URL-encoding the title is recommended — E.V also tolerates raw text).
+2. **Action: Get Calendar Events**
+   - **Select Calendar**: **Any calendar** — picking a single calendar excludes the others. Your Google events live in a different calendar account than your local/device ones, so a single choice will only return that one.
+   - **Start Offset**: `0` Minutes — search from now.
+   - **Duration**: `7` Days (or more; a short window returns nothing if your next event is further out).
+   - **Output Dictionary/Array Variable**: create a new **Array** variable, e.g. `evEvents`. (Array output is sorted by start time and each entry includes a `Title` field — the first entry `[0]` is your next event.)
+3. **Action: Open Website** → `https://elben08.github.io/E.V/#next={lv=evEvents[0][Title]}`
+   - `lv=` is for a variable local to the macro; use `{v=...}` if you made it a global variable instead.
+   - Use bracketed keys per level (`[0][Title]`), **not** dot notation — MacroDroid leaves unknown magic text in the URL unresolved.
+   - Extra fields are available if you want them, e.g. `{lv=evEvents[0][Start]}` or `{lv=evEvents[0][Location]}`.
 4. Enable the macro and allow Calendar permission when prompted.
+
+**Debugging** — if E.V shows the raw magic text (e.g. `Calendar:{lv=evEvents[0].Title}`), the variable/key path didn't resolve. Point the URL at `#next={lv=evEvents}` to dump the whole array structure (E.V prints it as `[key]: value` lines), confirm it's populated and note the exact field names, then fix the path.
 
 When you say *"check my calendar"*, E.V fires the intent, MacroDroid grabs the next event, and opens E.V with `#next=...`. E.V shows it in chat and keeps it on the private/Groq-only route. Works without root.
 
