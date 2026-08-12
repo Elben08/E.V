@@ -101,7 +101,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);

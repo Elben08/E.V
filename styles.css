@@ -20,6 +20,8 @@ html, body {
   color: var(--text);
   font-family: var(--font);
   overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -252,12 +254,13 @@ body {
 
 #text-input {
   flex: 1;
+  min-width: 0;
   background: var(--bg-2);
   border: 1px solid var(--line);
   color: var(--text);
   border-radius: 22px;
   padding: 12px 16px;
-  font-size: 15px;
+  font-size: 16px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
@@ -533,4 +536,18 @@ body {
 
 @media (max-width: 420px) {
   .msg { max-width: 92%; }
+}
+
+@media (max-width: 380px) {
+  .icon-btn { width: 34px; height: 34px; font-size: 15px; }
+  .reactor { width: 54px; height: 54px; }
+  .reactor-core { inset: 13px; }
+  .reactor-ring { border-width: 2px; }
+  .reactor .ring-2 { inset: 5px; }
+  .reactor .ring-3 { inset: 9px; }
+  .reactor .ring-4 { inset: 2px; }
+  .reactor-mic { font-size: 15px; }
+  .inputbar { padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
+  .input-row { gap: 6px; }
+  #text-input { padding: 11px 12px; }
 }
