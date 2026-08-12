@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v7';
+const APP_VERSION = 'v8';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -157,6 +157,66 @@ function readFileAsDataURL(file) {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+function estimateTokens(text) {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not load image'));
+    img.src = src;
+  });
+}
+
+function imageToJPEG(img, maxDim, quality) {
+  const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+const GROQ_IMAGE_BUDGET = 5800;
+
+async function fitGroqBudget(attachments, text) {
+  const list = attachments.filter((a) => a.kind === 'image');
+  if (!list.length) return true;
+  const overhead =
+    estimateTokens(buildSystem('groq')) +
+    history.reduce((s, h) => s + estimateTokens(h.text), 0) +
+    estimateTokens(text) + 400;
+  const levels = [
+    { dim: 1024, q: 0.6 },
+    { dim: 768, q: 0.5 },
+    { dim: 512, q: 0.4 },
+    { dim: 384, q: 0.35 },
+    { dim: 320, q: 0.3 }
+  ];
+  for (const level of levels) {
+    const total = overhead + list.reduce((s, a) => s + estimateTokens(a.dataURL), 0);
+    if (total <= GROQ_IMAGE_BUDGET) return true;
+    try {
+      for (const a of list) {
+        const img = await loadImage(a.dataURL);
+        a.dataURL = imageToJPEG(img, level.dim, level.q);
+      }
+    } catch (e) {
+      return false;
+    }
+  }
+  const total = overhead + list.reduce((s, a) => s + estimateTokens(a.dataURL), 0);
+  return total <= GROQ_IMAGE_BUDGET;
 }
 
 function renderAttachTray() {
@@ -248,19 +308,25 @@ function handleFileInput(files) {
   const readNext = () => {
     const a = remaining[0];
     readFileAsDataURL(a.file).then((dataURL) => {
-      a.dataURL = dataURL;
-      remaining = remaining.slice(1);
-      if (remaining.length) {
-        readNext();
+      if (a.kind === 'image') {
+        loadImage(dataURL).then((img) => {
+          a.dataURL = imageToJPEG(img, 1024, 0.7);
+          a.mime = 'image/jpeg';
+          finish();
+        }).catch(() => { toast('Could not read ' + a.name); finish(); });
       } else {
-        setPendingAttachments(pendingAttachments.concat(accepted));
+        a.dataURL = dataURL;
+        finish();
       }
     }).catch(() => {
       toast('Could not read ' + a.name);
-      remaining = remaining.slice(1);
-      if (remaining.length) readNext();
-      else setPendingAttachments(pendingAttachments.concat(accepted));
+      finish();
     });
+  };
+  const finish = () => {
+    remaining = remaining.slice(1);
+    if (remaining.length) readNext();
+    else setPendingAttachments(pendingAttachments.concat(accepted));
   };
   readNext();
 }
@@ -557,14 +623,14 @@ async function sendToGemini(messages, onToken, liveInfo) {
   throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
-async function sendToGroq(messages, onToken, startIndex) {
+async function sendToGroq(messages, onToken, startIndex, maxTokens) {
   const start = typeof startIndex === 'number' && startIndex >= 0 && startIndex < GROQ_MODELS.length
     ? startIndex
     : clampModelIndex(GROQ_MODELS, activeModels.groq);
   let lastErr = null;
   for (let i = start; i < GROQ_MODELS.length; i++) {
     try {
-      await groqAttempt(GROQ_MODELS[i].id, messages, onToken);
+      await groqAttempt(GROQ_MODELS[i].id, messages, onToken, maxTokens);
     } catch (e) {
       if (e.rateLimited) throw e;
       lastErr = e;
@@ -577,7 +643,7 @@ async function sendToGroq(messages, onToken, startIndex) {
   throw new Error('All Groq models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
-async function groqAttempt(model, messages, onToken) {
+async function groqAttempt(model, messages, onToken, maxTokens) {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -588,7 +654,7 @@ async function groqAttempt(model, messages, onToken) {
       model: model,
       messages: messages,
       temperature: 0.7,
-      max_tokens: 8192,
+      max_tokens: maxTokens || 8192,
       stream: true
     })
   });
@@ -839,6 +905,15 @@ async function send(rawText) {
     toast('Groq can\u2019t read PDFs. Remove the PDF or switch provider to Gemini.');
     return;
   }
+  const hasImage = pendingAttachments.some((a) => a.kind === 'image');
+  const groqMaxTokens = hasImage ? 2048 : 8192;
+  if (provider === 'groq' && hasImage) {
+    const fits = await fitGroqBudget(pendingAttachments, text + note);
+    if (!fits) {
+      fail('Image too large for Groq\u2019s free limit even after compression. Try a smaller screenshot or a shorter conversation, then resend.');
+      return;
+    }
+  }
 
   let usedLabel = provider === 'gemini'
     ? 'gemini · ' + getActiveModel('gemini')
@@ -866,6 +941,10 @@ async function send(rawText) {
       ? 'Gemini is rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
       : geminiErr.message) + ', and no Groq key is set to fall back to.');
     if (hasPdf) throw new Error(geminiErr.message + ' (and PDF attachments can\u2019t fall back to Groq).');
+    if (hasImage) {
+      const fits = await fitGroqBudget(pendingAttachments, text + note);
+      if (!fits) throw new Error(geminiErr.message + ' (and the image is too large for Groq\u2019s free limit even after compression).');
+    }
     usedLabel = 'groq · fallback · ' + getActiveModel('groq');
     bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
     const noteEl = document.createElement('div');
@@ -876,7 +955,7 @@ async function send(rawText) {
     noteEl.textContent = reason + ' — using Groq.';
     bubble.appendChild(noteEl);
     toast(reason + ' — using Groq.');
-    await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart());
+    await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart(), groqMaxTokens);
   };
 
   if (provider === 'gemini') {
@@ -895,11 +974,11 @@ async function send(rawText) {
   } else {
     if (!settings.groqKey) { fail('Add your Groq API key in Settings (gear icon).'); return; }
     try {
-      await sendToGroq(messages, token, groqStart());
+      await sendToGroq(messages, token, groqStart(), groqMaxTokens);
     } catch (err) {
-      fail(err.rateLimited
-        ? 'Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.'
-        : err.message);
+      if (err.rateLimited) fail('Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.');
+      else if (/request too large|reduce message size|tokens per minute|tpm/i.test(err.message)) fail('The image was still too big for Groq\u2019s free limit. Try a smaller screenshot or a shorter conversation, then resend.');
+      else fail(err.message);
       return;
     }
   }
