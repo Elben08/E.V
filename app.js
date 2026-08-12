@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -792,6 +792,16 @@ function fail(message) {
   addMsg('ev', message, { error: true });
 }
 
+function renderHistory() {
+  for (const h of history) {
+    if (h.role === 'user') {
+      addMsg('user', h.text);
+    } else {
+      addMsg('ev', h.text, h.provider ? { provider: h.provider } : undefined);
+    }
+  }
+}
+
 function failInBubble(bubble, message, retry) {
   busy = false;
   setStatus('online', '');
@@ -973,6 +983,7 @@ async function send(rawText) {
   addMsg('user', text + (attachText ? '\n' + attachText.trim() : ''));
   history.push({ role: 'user', text: text + attachText, sensitive: analysis.sensitive });
   trimHistory();
+  saveJSON(STORAGE.history, history);
 
   const note = cmdReply ? '\n[Handled by app: ' + cmdReply + ']' : '';
   const { provider, reason } = chooseProvider(analysis);
@@ -1103,7 +1114,7 @@ async function send(rawText) {
       ? 'gemini · ' + getActiveModel('gemini')
       : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
     bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
-    history.push({ role: 'ev', text: cleaned, sensitive: analysis.sensitive });
+    history.push({ role: 'ev', text: cleaned, sensitive: analysis.sensitive, provider: usedLabel });
     trimHistory();
     saveJSON(STORAGE.history, history);
     extractFacts(text);
@@ -1320,6 +1331,7 @@ function init() {
     addMsg('ev', hello);
     if (settings.voice) speak(hello);
   } else {
+    renderHistory();
     addMsg('ev', 'Welcome back.');
   }
 }
