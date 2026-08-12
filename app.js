@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -555,24 +555,38 @@ async function sendToGemini(messages, onToken, liveInfo) {
     });
     if (res.status === 429) throw await rateLimitError(res);
     if (!res.ok) throw new Error(await geminiError(res));
+    const emptyReplyError = (finishReason, blockReason) => {
+      let msg = 'Gemini returned an empty reply' +
+        (finishReason ? ' (finishReason: ' + finishReason + ')' : '') +
+        (blockReason ? ', blocked: ' + blockReason : '') + '.';
+      return new Error(msg);
+    };
     if (endpoint.indexOf('stream') !== -1) {
+      let streamed = false;
+      let finishReason = '';
+      let blockReason = '';
       await readSSE(res, (chunk) => {
         const cand = chunk.candidates && chunk.candidates[0];
+        if (cand && cand.finishReason) finishReason = cand.finishReason;
+        if (chunk.promptFeedback && chunk.promptFeedback.blockReason) blockReason = chunk.promptFeedback.blockReason;
         const parts = cand && cand.content && cand.content.parts;
         if (!parts) return;
         for (const p of parts) {
           if (p.thought || !p.text) continue;
+          streamed = true;
           onToken(p.text);
         }
       }, (err) => {
         throw new Error((err && err.message) || 'Gemini stream error');
       });
+      if (!streamed) throw emptyReplyError(finishReason, blockReason);
     } else {
       const json = await res.json();
-      const parts = json.candidates && json.candidates[0] && json.candidates[0].content
-        ? json.candidates[0].content.parts : [];
+      const cand = json.candidates && json.candidates[0];
+      const parts = cand && cand.content ? cand.content.parts : [];
       const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
       if (text) onToken(text);
+      else throw emptyReplyError(cand && cand.finishReason, json.promptFeedback && json.promptFeedback.blockReason);
     }
   };
 
@@ -736,6 +750,29 @@ function fail(message) {
   updateSendDisabled();
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   addMsg('ev', message, { error: true });
+}
+
+function failInBubble(bubble, message, retry) {
+  busy = false;
+  setStatus('online', '');
+  updateSendDisabled();
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  bubble.classList.add('error');
+  const bodyEl = bubble.querySelector('.body');
+  if (bodyEl) bodyEl.textContent = message;
+  const oldNote = bubble.querySelector('.fallback-note');
+  if (oldNote) oldNote.remove();
+  const oldBtn = bubble.querySelector('.retry-btn');
+  if (oldBtn) oldBtn.remove();
+  const btn = document.createElement('button');
+  btn.className = 'retry-btn';
+  btn.textContent = '\u21bb Retry';
+  btn.addEventListener('click', () => {
+    if (busy) return;
+    retry();
+  });
+  bubble.appendChild(btn);
+  scrollChat();
 }
 
 function trimHistory() {
@@ -906,7 +943,6 @@ async function send(rawText) {
     return;
   }
   const hasImage = pendingAttachments.some((a) => a.kind === 'image');
-  const groqMaxTokens = hasImage ? 2048 : 8192;
   if (provider === 'groq' && hasImage) {
     const fits = await fitGroqBudget(pendingAttachments, text + note);
     if (!fits) {
@@ -915,89 +951,110 @@ async function send(rawText) {
     }
   }
 
-  let usedLabel = provider === 'gemini'
+  const baseLabel = provider === 'gemini'
     ? 'gemini · ' + getActiveModel('gemini')
     : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
-  const messages = buildMessages(provider, text + note, pendingAttachments);
 
-  busy = true;
-  updateSendDisabled();
-  const statusLabel = provider === 'groq' && (reason === 'sensitive' || reason === 'private')
-    ? 'private route' : 'thinking';
-  setStatus(statusLabel, 'busy');
-  const bubble = addMsg('ev', '', { provider: usedLabel });
+  if (provider === 'gemini' && !settings.geminiKey) { fail('Add your Gemini API key in Settings (gear icon).'); return; }
+  if (provider === 'groq' && !settings.groqKey) { fail('Add your Groq API key in Settings (gear icon).'); return; }
+
+  const bubble = addMsg('ev', '', { provider: baseLabel });
   const bodyEl = bubble.querySelector('.body');
+  let usedLabel = baseLabel;
 
-  let reply = '';
-  const token = (chunk) => {
-    if (typeof chunk !== 'string') return;
-    reply += chunk;
-    bodyEl.textContent = reply;
-    scrollChat();
-  };
-  const groqStart = () => (pendingAttachments.length ? firstVisionIndex('groq') : undefined);
-  const fallbackToGroq = async (geminiErr) => {
-    if (!settings.groqKey) throw new Error((geminiErr.rateLimited
-      ? 'Gemini is rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
-      : geminiErr.message) + ', and no Groq key is set to fall back to.');
-    if (hasPdf) throw new Error(geminiErr.message + ' (and PDF attachments can\u2019t fall back to Groq).');
-    if (hasImage) {
-      const fits = await fitGroqBudget(pendingAttachments, text + note);
-      if (!fits) throw new Error(geminiErr.message + ' (and the image is too large for Groq\u2019s free limit even after compression).');
-    }
-    usedLabel = 'groq · fallback · ' + getActiveModel('groq');
+  const run = async () => {
+    usedLabel = baseLabel;
+    bubble.classList.remove('error');
+    bodyEl.textContent = '';
+    const oldNote = bubble.querySelector('.fallback-note');
+    if (oldNote) oldNote.remove();
+    const oldBtn = bubble.querySelector('.retry-btn');
+    if (oldBtn) oldBtn.remove();
     bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
-    const noteEl = document.createElement('div');
-    noteEl.className = 'fallback-note';
-    const reason = geminiErr.rateLimited
-      ? 'Gemini is temporarily rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
-      : 'Gemini error: ' + geminiErr.message;
-    noteEl.textContent = reason + ' — using Groq.';
-    bubble.appendChild(noteEl);
-    toast(reason + ' — using Groq.');
-    await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart(), groqMaxTokens);
-  };
 
-  if (provider === 'gemini') {
-    if (!settings.geminiKey) { fail('Add your Gemini API key in Settings (gear icon).'); return; }
-    const useLive = needsLiveInfo(text) && !pendingAttachments.length;
-    try {
-      await sendToGemini(messages, token, useLive);
-    } catch (err) {
+    const curHasImage = pendingAttachments.some((a) => a.kind === 'image');
+    const curHasPdf = pendingAttachments.some((a) => a.kind === 'pdf');
+    const curGroqMaxTokens = curHasImage ? 2048 : 8192;
+
+    busy = true;
+    updateSendDisabled();
+    const statusLabel = provider === 'groq' && (reason === 'sensitive' || reason === 'private')
+      ? 'private route' : 'thinking';
+    setStatus(statusLabel, 'busy');
+
+    let reply = '';
+    const token = (chunk) => {
+      if (typeof chunk !== 'string') return;
+      reply += chunk;
+      bodyEl.textContent = reply;
+      scrollChat();
+    };
+    const groqStart = () => (pendingAttachments.length ? firstVisionIndex('groq') : undefined);
+    const fallbackToGroq = async (geminiErr) => {
+      if (!settings.groqKey) throw new Error((geminiErr.rateLimited
+        ? 'Gemini is rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
+        : geminiErr.message) + ', and no Groq key is set to fall back to.');
+      if (curHasPdf) throw new Error(geminiErr.message + ' (and PDF attachments can\u2019t fall back to Groq).');
+      if (curHasImage) {
+        const fits = await fitGroqBudget(pendingAttachments, text + note);
+        if (!fits) throw new Error(geminiErr.message + ' (and the image is too large for Groq\u2019s free limit even after compression).');
+      }
+      usedLabel = 'groq · fallback · ' + getActiveModel('groq');
+      bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
+      const noteEl = document.createElement('div');
+      noteEl.className = 'fallback-note';
+      const reasonText = geminiErr.rateLimited
+        ? 'Gemini is temporarily rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
+        : 'Gemini error: ' + geminiErr.message;
+      noteEl.textContent = reasonText + ' — using Groq.';
+      bubble.appendChild(noteEl);
+      toast(reasonText + ' — using Groq.');
+      await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart(), curGroqMaxTokens);
+    };
+
+    if (provider === 'gemini') {
+      const useLive = needsLiveInfo(text) && !pendingAttachments.length;
       try {
-        await fallbackToGroq(err);
-      } catch (err2) {
-        fail(err2.message);
+        await sendToGemini(buildMessages('gemini', text + note, pendingAttachments), token, useLive);
+      } catch (err) {
+        try {
+          await fallbackToGroq(err);
+        } catch (err2) {
+          failInBubble(bubble, err2.message, run);
+          return;
+        }
+      }
+    } else {
+      try {
+        await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart(), curGroqMaxTokens);
+      } catch (err) {
+        let msg;
+        if (err.rateLimited) msg = 'Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.';
+        else if (/request too large|reduce message size|tokens per minute|tpm/i.test(err.message)) msg = 'The image was still too big for Groq\u2019s free limit. Try a smaller screenshot or a shorter conversation, then resend.';
+        else msg = err.message;
+        failInBubble(bubble, msg, run);
         return;
       }
     }
-  } else {
-    if (!settings.groqKey) { fail('Add your Groq API key in Settings (gear icon).'); return; }
-    try {
-      await sendToGroq(messages, token, groqStart(), groqMaxTokens);
-    } catch (err) {
-      if (err.rateLimited) fail('Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.');
-      else if (/request too large|reduce message size|tokens per minute|tpm/i.test(err.message)) fail('The image was still too big for Groq\u2019s free limit. Try a smaller screenshot or a shorter conversation, then resend.');
-      else fail(err.message);
-      return;
-    }
-  }
 
-  busy = false;
-  updateSendDisabled();
-  setStatus('online', '');
-  const cleaned = reply.trim();
-  if (!cleaned) { fail('E.V received nothing back. Try again.'); return; }
-  usedLabel = provider === 'gemini'
-    ? 'gemini · ' + getActiveModel('gemini')
-    : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
-  bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
-  history.push({ role: 'ev', text: cleaned, sensitive: analysis.sensitive });
-  trimHistory();
-  saveJSON(STORAGE.history, history);
-  extractFacts(text);
-  setPendingAttachments([]);
-  if (settings.voice) speak(cleaned);
+    busy = false;
+    updateSendDisabled();
+    setStatus('online', '');
+    const cleaned = reply.trim();
+    if (!cleaned) { failInBubble(bubble, 'E.V received nothing back. Try again.', run); return; }
+    usedLabel = provider === 'gemini'
+      ? 'gemini · ' + getActiveModel('gemini')
+      : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
+    bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
+    history.push({ role: 'ev', text: cleaned, sensitive: analysis.sensitive });
+    trimHistory();
+    saveJSON(STORAGE.history, history);
+    extractFacts(text);
+    setPendingAttachments([]);
+    if (settings.voice) speak(cleaned);
+  };
+
+  await run();
 }
 
 function openSettings() {

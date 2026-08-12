@@ -124,6 +124,22 @@ body {
 .msg.ev .tag .provider { color: var(--cyan); }
 
 .msg.error { border-color: var(--danger); color: #ffb3b3; }
+.msg .retry-btn {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--cyan);
+  background: transparent;
+  border: 1px solid var(--cyan);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.msg .retry-btn:hover { background: rgba(0, 229, 255, 0.08); }
+.msg .retry-btn:active { transform: scale(0.97); }
 .fallback-note {
   display: block;
   margin-top: 6px;
