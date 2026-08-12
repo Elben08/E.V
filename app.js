@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -217,6 +217,45 @@ async function fitGroqBudget(attachments, text) {
   }
   const total = overhead + list.reduce((s, a) => s + estimateTokens(a.dataURL), 0);
   return total <= GROQ_IMAGE_BUDGET;
+}
+
+const GROQ_TEXT_BUDGET = 7200;
+
+function estimateMessagesTokens(messages) {
+  let total = 0;
+  for (const m of messages) {
+    if (typeof m.content === 'string') total += estimateTokens(m.content);
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (typeof p === 'string') total += estimateTokens(p);
+        else if (p && typeof p.text === 'string') total += estimateTokens(p.text);
+        else if (p && p.type === 'image_url') total += 800;
+      }
+    }
+  }
+  return total;
+}
+
+function fitGroqTextBudget(userText, attachments) {
+  const messages = buildMessages('groq', userText, attachments);
+  if (estimateMessagesTokens(messages) <= GROQ_TEXT_BUDGET) {
+    return { messages: messages, fits: true, trimmed: false, estimated: 0 };
+  }
+  const histArr = history.slice();
+  for (let keep = histArr.length - 1; keep >= 0; keep--) {
+    const hist = keep === 0 ? [] : histArr.slice(histArr.length - keep);
+    const m = buildMessages('groq', userText, attachments, hist);
+    if (estimateMessagesTokens(m) <= GROQ_TEXT_BUDGET) {
+      const last = m[m.length - 1];
+      const note = '\n[Note: the earlier part of this conversation was trimmed to fit Groq\u2019s free limit.]';
+      if (last && last.content) {
+        if (typeof last.content === 'string') last.content += note;
+        else if (Array.isArray(last.content)) last.content.push({ type: 'text', text: note });
+      }
+      return { messages: m, fits: true, trimmed: true, estimated: 0 };
+    }
+  }
+  return { messages: messages, fits: false, trimmed: false, estimated: estimateMessagesTokens(messages) };
 }
 
 function renderAttachTray() {
@@ -445,11 +484,12 @@ function buildSystem(provider) {
   return out;
 }
 
-function buildMessages(provider, userText, attachments) {
+function buildMessages(provider, userText, attachments, hist) {
   const atts = attachments || [];
+  const histArr = hist || history;
   if (provider === 'gemini') {
     const contents = [];
-    for (const h of history) {
+    for (const h of histArr) {
       if (h.sensitive) continue;
       contents.push({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.text }] });
     }
@@ -463,7 +503,7 @@ function buildMessages(provider, userText, attachments) {
     return contents;
   }
   const messages = [{ role: 'system', content: buildSystem(provider) }];
-  for (const h of history) {
+  for (const h of histArr) {
     messages.push({ role: h.role === 'user' ? 'user' : 'assistant', content: h.text });
   }
   const content = [];
@@ -995,9 +1035,15 @@ async function send(rawText) {
         ? 'Gemini is rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
         : geminiErr.message) + ', and no Groq key is set to fall back to.');
       if (curHasPdf) throw new Error(geminiErr.message + ' (and PDF attachments can\u2019t fall back to Groq).');
+      let groqMessages;
       if (curHasImage) {
         const fits = await fitGroqBudget(pendingAttachments, text + note);
         if (!fits) throw new Error(geminiErr.message + ' (and the image is too large for Groq\u2019s free limit even after compression).');
+        groqMessages = buildMessages('groq', text + note, pendingAttachments);
+      } else {
+        const fit = fitGroqTextBudget(text + note, pendingAttachments);
+        if (!fit.fits) throw new Error(geminiErr.message + ' (and this conversation is too long for Groq\u2019s free limit \u2014 tap Retry to try Gemini again, or start a new conversation).');
+        groqMessages = fit.messages;
       }
       usedLabel = 'groq · fallback · ' + getActiveModel('groq');
       bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
@@ -1009,7 +1055,7 @@ async function send(rawText) {
       noteEl.textContent = reasonText + ' — using Groq.';
       bubble.appendChild(noteEl);
       toast(reasonText + ' — using Groq.');
-      await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart(), curGroqMaxTokens);
+      await sendToGroq(groqMessages, token, groqStart(), curGroqMaxTokens);
     };
 
     if (provider === 'gemini') {
@@ -1025,12 +1071,23 @@ async function send(rawText) {
         }
       }
     } else {
+      let groqMessages;
+      if (curHasImage) {
+        groqMessages = buildMessages('groq', text + note, pendingAttachments);
+      } else {
+        const fit = fitGroqTextBudget(text + note, pendingAttachments);
+        if (!fit.fits) {
+          failInBubble(bubble, 'This conversation is too long for Groq\u2019s free limit (' + fit.estimated + ' tokens). Tap Retry to ask Gemini (it handles long conversations), or start a new one.', run);
+          return;
+        }
+        groqMessages = fit.messages;
+      }
       try {
-        await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart(), curGroqMaxTokens);
+        await sendToGroq(groqMessages, token, groqStart(), curGroqMaxTokens);
       } catch (err) {
         let msg;
         if (err.rateLimited) msg = 'Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.';
-        else if (/request too large|reduce message size|tokens per minute|tpm/i.test(err.message)) msg = 'The image was still too big for Groq\u2019s free limit. Try a smaller screenshot or a shorter conversation, then resend.';
+        else if (/request too large|reduce message size|tokens per minute|tpm/i.test(err.message)) msg = 'The request is too large for Groq\u2019s free limit. Try a shorter conversation, or ask Gemini instead.';
         else msg = err.message;
         failInBubble(bubble, msg, run);
         return;
