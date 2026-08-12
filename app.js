@@ -98,10 +98,11 @@ const DEFAULT_SETTINGS = {
   groqKey: '',
   provider: 'auto',
   privacy: 'auto',
-  voice: true
+  voice: true,
+  macroWebhook: ''
 };
 
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -960,8 +961,13 @@ function launchApp(app) {
 }
 
 function triggerMacro(action) {
-  window.location.href =
-    'intent://#Intent;action=' + action + ';scheme=mdm;category=android.intent.category.DEFAULT;end';
+  const base = (settings.macroWebhook || '').trim().replace(/\/+$/, '');
+  if (!base) {
+    return 'MacroDroid webhook URL is not set. Open Settings (gear icon) and paste it.';
+  }
+  const url = base + '/ev_cmd?cmd=' + encodeURIComponent(action);
+  try { fetch(url, { method: 'GET', mode: 'no-cors', cache: 'no-store' }); } catch (e) { /* ignore */ }
+  return null;
 }
 
 function parseCalendarFragment() {
@@ -989,8 +995,8 @@ function scheduleReminder(ms, text) {
 function handlePhoneCommands(text) {
   const lower = text.toLowerCase();
   if (CALENDAR_RE.test(lower)) {
-    triggerMacro('com.ev.calendar.lookup');
-    return 'Calendar lookup sent to MacroDroid. Your next event will appear when the result page opens.';
+    const err = triggerMacro('calendar');
+    return err || 'Calendar lookup sent to MacroDroid. Your next event will appear when the result page opens.';
   }
   const openMatch = lower.match(OPEN_APP_RE);
   if (openMatch) {
@@ -1016,8 +1022,8 @@ function handlePhoneCommands(text) {
   const toggleMatch = text.match(TOGGLE_RE);
   if (toggleMatch) {
     const what = toggleMatch[3] === 'torch' ? 'flashlight' : toggleMatch[3];
-    triggerMacro('com.ev.' + what + '.' + toggleMatch[2]);
-    return 'Sending command to switch ' + what + ' ' + toggleMatch[2] + '.';
+    const err = triggerMacro(what + '.' + toggleMatch[2]);
+    return err || 'Sending command to switch ' + what + ' ' + toggleMatch[2] + '.';
   }
   return null;
 }
@@ -1210,6 +1216,7 @@ function openSettings() {
   el['set-provider'].value = settings.provider;
   el['set-privacy'].value = settings.privacy;
   el['set-voice'].checked = settings.voice;
+  el['set-macro-webhook'].value = settings.macroWebhook;
   el['gemini-model-label'].textContent = modelLabel('gemini');
   el['groq-model-label'].textContent = modelLabel('groq');
   show(el['modal-settings']);
@@ -1221,6 +1228,7 @@ function saveSettingsForm() {
   settings.provider = el['set-provider'].value;
   settings.privacy = el['set-privacy'].value;
   settings.voice = el['set-voice'].checked;
+  settings.macroWebhook = el['set-macro-webhook'].value.trim();
   saveJSON(STORAGE.settings, settings);
   hide(el['modal-settings']);
   toast('Settings saved.');

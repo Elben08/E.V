@@ -65,37 +65,28 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
 |---|---|
 | "Open whatsapp / maps / youtube / spotify / gmail / settings ..." | Launches that app |
 | "Remind me in 10 minutes to drink water" | Notification + spoken reminder |
-| "Turn on the flashlight" / "Turn off wifi" | Fires a MacroDroid intent (see below) |
-| "Check my calendar" / "What's my next event?" | Fires `com.ev.calendar.lookup`; MacroDroid opens E.V with your next event (see below) |
+| "Turn on the flashlight" / "Turn off wifi" | Sends a MacroDroid webhook command (see below) |
+| "Check my calendar" / "What's my next event?" | Sends the `calendar` webhook command; MacroDroid opens E.V with your next event (see below) |
 
-### MacroDroid (free, optional — for real device toggles)
+### MacroDroid (free, optional — for real device toggles + calendar)
+
+> E.V talks to MacroDroid through the **Webhook (URL)** trigger (a plain HTTP call), not intents — MacroDroid's *Intent Received* trigger is a broadcast receiver and can't be reached from a web page. Requires Google Play Services on the phone.
 
 1. Install [MacroDroid](https://play.google.com/store/apps/details?id=com.arlosoft.macrodroid) (free).
-2. Create a Macro → **Trigger: Intent Received**.
-   - Action: `com.ev.flashlight.on` (or `.off`, `com.ev.wifi.on`, `com.ev.bluetooth.on`, ...)
-   - Category: leave the default.
-3. **Action: Set Flashlight / Wi-Fi / Bluetooth** accordingly, then enable the macro.
-4. Allow MacroDroid the needed permissions when prompted.
+2. In E.V → **Settings (gear)** → paste your webhook base URL: `https://trigger.macrodroid.com/<device-id>/` (the `<device-id>` part comes from any Webhook trigger URL below).
+3. Create **one** macro named `E.V Commands`:
+   - **Trigger: Webhook (URL)** → Identifier `ev_cmd`. This gives you `https://trigger.macrodroid.com/<device-id>/ev_cmd`. If the trigger shows a PRO badge in the free version, stop here and let me know — we'll need a different approach.
+   - **Global variable**: create a string variable named `cmd` (the webhook fills it from `?cmd=...`).
+   - **Actions** (If / Else-If chain on `{v=cmd}`):
+     - If `{v=cmd}` = `calendar` → **Get Calendar Events** (Select Calendar: Any; Start Offset 0; Duration 7 days; output to an **Array** variable `evEvents`) → **Open Website** → `https://elben08.github.io/E.V/#next={lv=evEvents[0][Title]}`
+     - Else-If `{v=cmd}` = `flashlight.on` → **Set Flashlight: On**
+     - Else-If `{v=cmd}` = `flashlight.off` → **Set Flashlight: Off**
+     - (add `wifi.on` / `wifi.off` / `bluetooth.on` / `bluetooth.off` branches the same way if you want those)
+4. Enable the macro and allow Calendar / Flashlight / Wi-Fi / Bluetooth permissions when prompted.
 
-### MacroDroid — calendar lookup
+**Calendar debugging** — if E.V shows the raw magic text (e.g. `Calendar:{lv=evEvents[0].Title}`), the variable/key path didn't resolve. Temporarily change the Open Website URL to `#next={lv=evEvents}` to dump the whole array (E.V prints it as `[key]: value` lines), confirm it's populated, then restore the correct path. Bracketed keys per level (`[0][Title]`), not dot notation; `lv=` for local variables, `v=` for global.
 
-> These steps are for **MacroDroid 5.65+** (the action no longer uses the old `[calendar_event_title]` magic text — it outputs to a variable instead).
-
-1. Create a Macro → **Trigger: Intent Received** with action `com.ev.calendar.lookup` (Category: default).
-2. **Action: Get Calendar Events**
-   - **Select Calendar**: **Any calendar** — picking a single calendar excludes the others. Your Google events live in a different calendar account than your local/device ones, so a single choice will only return that one.
-   - **Start Offset**: `0` Minutes — search from now.
-   - **Duration**: `7` Days (or more; a short window returns nothing if your next event is further out).
-   - **Output Dictionary/Array Variable**: create a new **Array** variable, e.g. `evEvents`. (Array output is sorted by start time and each entry includes a `Title` field — the first entry `[0]` is your next event.)
-3. **Action: Open Website** → `https://elben08.github.io/E.V/#next={lv=evEvents[0][Title]}`
-   - `lv=` is for a variable local to the macro; use `{v=...}` if you made it a global variable instead.
-   - Use bracketed keys per level (`[0][Title]`), **not** dot notation — MacroDroid leaves unknown magic text in the URL unresolved.
-   - Extra fields are available if you want them, e.g. `{lv=evEvents[0][Start]}` or `{lv=evEvents[0][Location]}`.
-4. Enable the macro and allow Calendar permission when prompted.
-
-**Debugging** — if E.V shows the raw magic text (e.g. `Calendar:{lv=evEvents[0].Title}`), the variable/key path didn't resolve. Point the URL at `#next={lv=evEvents}` to dump the whole array structure (E.V prints it as `[key]: value` lines), confirm it's populated and note the exact field names, then fix the path.
-
-When you say *"check my calendar"*, E.V fires the intent, MacroDroid grabs the next event, and opens E.V with `#next=...`. E.V shows it in chat and keeps it on the private/Groq-only route. Works without root.
+When you say *"check my calendar"*, E.V calls the webhook with `?cmd=calendar`, MacroDroid grabs the next event and opens E.V with `#next=...`. E.V shows it in chat and keeps it on the private/Groq-only route. Works without root.
 
 App-launching and reminders work without MacroDroid.
 
