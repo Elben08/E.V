@@ -1050,7 +1050,7 @@ function openMemory() {
 
 function init() {
   try {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?ev=v4', { updateViaCache: 'none' });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?ev=v5', { updateViaCache: 'none' });
   } catch (e) { /* ignore */ }
   if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
 
