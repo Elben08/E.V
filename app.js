@@ -82,6 +82,7 @@ const APPS = {
 const OPEN_APP_RE = /(?:open|launch|start)\s+(?:up\s+)?([a-z][a-z ]{1,20})/i;
 const REMIND_RE = /remind me (?:in\s+)?(\d{1,3})\s*(seconds?|minutes?|hours?)\s*(?:to|that|about)?\s*(.+)/i;
 const TOGGLE_RE = /(turn|switch)\s+(on|off)\s+(?:the\s+)?(flashlight|wifi|bluetooth|torch)/i;
+const CALENDAR_RE = /\b(check|look(?:\s+at)?|read|see|show|what(?:'s| is| are)|open)\s+(?:my\s+|the\s+)?(?:next\s+|upcoming\s+|today'?s\s+)?(calendar|schedule|events?|appointments?)\b/i;
 
 const STORAGE = {
   settings: 'ev.settings',
@@ -100,7 +101,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -963,6 +964,14 @@ function triggerMacro(action) {
     'intent://#Intent;action=' + action + ';scheme=mdm;category=android.intent.category.DEFAULT;end';
 }
 
+function parseCalendarFragment() {
+  const m = window.location.hash.match(/^#next=(.*)$/);
+  if (!m) return null;
+  let s = m[1];
+  try { s = decodeURIComponent(s); } catch (e) { /* keep raw */ }
+  return s.replace(/\+/g, ' ').trim() || null;
+}
+
 function scheduleReminder(ms, text) {
   if ('Notification' in window && Notification.permission === 'default') {
     try { Notification.requestPermission(); } catch (e) { /* ignore */ }
@@ -979,6 +988,10 @@ function scheduleReminder(ms, text) {
 
 function handlePhoneCommands(text) {
   const lower = text.toLowerCase();
+  if (CALENDAR_RE.test(lower)) {
+    triggerMacro('com.ev.calendar.lookup');
+    return 'Calendar lookup sent to MacroDroid. Your next event will appear when the result page opens.';
+  }
   const openMatch = lower.match(OPEN_APP_RE);
   if (openMatch) {
     let name = openMatch[1].replace(/\s+(up|the|app)\s+/g, ' ').trim();
@@ -1413,6 +1426,17 @@ function init() {
   } else {
     renderHistory();
     addMsg('ev', 'Welcome back.');
+  }
+  const calendarEvent = parseCalendarFragment();
+  if (calendarEvent) {
+    history.push({ role: 'user', text: '[Calendar lookup result] ' + calendarEvent, sensitive: true });
+    trimHistory();
+    saveJSON(STORAGE.history, history);
+    addMsg('ev', 'Calendar: ' + calendarEvent);
+    if (settings.voice) speak('Calendar: ' + calendarEvent);
+  }
+  if (window.location.hash.match(/^#next=/)) {
+    try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch (e) { /* ignore */ }
   }
 }
 

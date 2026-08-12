@@ -66,6 +66,7 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
 | "Open whatsapp / maps / youtube / spotify / gmail / settings ..." | Launches that app |
 | "Remind me in 10 minutes to drink water" | Notification + spoken reminder |
 | "Turn on the flashlight" / "Turn off wifi" | Fires a MacroDroid intent (see below) |
+| "Check my calendar" / "What's my next event?" | Fires `com.ev.calendar.lookup`; MacroDroid opens E.V with your next event (see below) |
 
 ### MacroDroid (free, optional — for real device toggles)
 
@@ -75,6 +76,15 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
    - Category: leave the default.
 3. **Action: Set Flashlight / Wi-Fi / Bluetooth** accordingly, then enable the macro.
 4. Allow MacroDroid the needed permissions when prompted.
+
+### MacroDroid — calendar lookup
+
+1. Create a Macro → **Trigger: Intent Received** with action `com.ev.calendar.lookup` (Category: default).
+2. **Action: Get Calendar Events** (from the next/upcoming event; this fills the `[calendar_event_title]` etc. variables).
+3. **Action: Open Website** → `https://elben08.github.io/E.V/#next=[calendar_event_title]` (URL-encoding the title is recommended — E.V also tolerates raw text).
+4. Enable the macro and allow Calendar permission when prompted.
+
+When you say *"check my calendar"*, E.V fires the intent, MacroDroid grabs the next event, and opens E.V with `#next=...`. E.V shows it in chat and keeps it on the private/Groq-only route. Works without root.
 
 App-launching and reminders work without MacroDroid.
 
