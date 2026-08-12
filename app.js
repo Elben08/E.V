@@ -332,6 +332,12 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
+const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday)\b/i;
+
+function needsLiveInfo(text) {
+  return LIVE_INFO_RE.test(text);
+}
+
 function analyzeSensitivity(text) {
   const hits = new Set();
   for (const p of PII_PATTERNS) {
@@ -431,15 +437,15 @@ async function readSSE(response, onData, onError) {
   }
 }
 
-async function sendToGemini(messages, onToken) {
+async function sendToGemini(messages, onToken, liveInfo) {
   const key = encodeURIComponent(settings.geminiKey);
   const headers = { 'Content-Type': 'application/json' };
   const body = {
     contents: messages,
     systemInstruction: { parts: [{ text: buildSystem('gemini') }] },
-    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
-    tools: [{ googleSearch: {} }]
+    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
   };
+  if (liveInfo) body.tools = [{ googleSearch: {} }];
 
   const geminiError = async (res) => {
     let msg = 'HTTP ' + res.status;
@@ -449,6 +455,20 @@ async function sendToGemini(messages, onToken) {
     } catch (e) { /* fall back to status */ }
     return msg;
   };
+
+  const rateLimitError = async (res) => {
+    let detail = 'quota reached';
+    try {
+      const j = await res.json();
+      if (j && j.error && j.error.message) detail = j.error.message;
+    } catch (e) { /* status only */ }
+    const err = new Error('RATE_LIMIT');
+    err.rateLimited = true;
+    err.detail = detail;
+    return err;
+  };
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const attempt = async (model, endpoint, useTools) => {
     const b = JSON.parse(JSON.stringify(body));
@@ -460,19 +480,40 @@ async function sendToGemini(messages, onToken) {
       headers: headers,
       body: JSON.stringify(b)
     });
-    if (res.status === 429) throw new Error('RATE_LIMIT');
+    if (res.status === 429) throw await rateLimitError(res);
     if (!res.ok) throw new Error(await geminiError(res));
     if (endpoint.indexOf('stream') !== -1) {
-      await readSSE(res, onToken, (err) => {
+      await readSSE(res, (chunk) => {
+        const cand = chunk.candidates && chunk.candidates[0];
+        const parts = cand && cand.content && cand.content.parts;
+        if (!parts) return;
+        for (const p of parts) {
+          if (p.thought || !p.text) continue;
+          onToken(p.text);
+        }
+      }, (err) => {
         throw new Error((err && err.message) || 'Gemini stream error');
       });
     } else {
       const json = await res.json();
       const parts = json.candidates && json.candidates[0] && json.candidates[0].content
         ? json.candidates[0].content.parts : [];
-      const text = parts.map((p) => p.text || '').join('');
+      const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
       if (text) onToken(text);
     }
+  };
+
+  const recoverFromRateLimit = async (model) => {
+    for (let t = 1; t <= 2; t++) {
+      await sleep(1200 * t);
+      try {
+        await attempt(model, 'streamGenerateContent?alt=sse', false);
+        return true;
+      } catch (e2) {
+        if (!e2.rateLimited) return false;
+      }
+    }
+    return false;
   };
 
   const start = clampModelIndex(GEMINI_MODELS, activeModels.gemini);
@@ -480,15 +521,21 @@ async function sendToGemini(messages, onToken) {
   for (let i = start; i < GEMINI_MODELS.length; i++) {
     const model = GEMINI_MODELS[i].id;
     try {
-      await attempt(model, 'streamGenerateContent?alt=sse', true);
+      await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
     } catch (e) {
-      if (e.message === 'RATE_LIMIT') throw e;
+      if (e.rateLimited) {
+        if (await recoverFromRateLimit(model)) { setActiveModel('gemini', i); return; }
+        throw e;
+      }
       lastErr = e;
       if (!isModelUnavailable(e.message)) {
         try {
           await attempt(model, 'generateContent', false);
         } catch (e2) {
-          if (e2.message === 'RATE_LIMIT') throw e2;
+          if (e2.rateLimited) {
+            if (await recoverFromRateLimit(model)) { setActiveModel('gemini', i); return; }
+            throw e2;
+          }
           lastErr = e2;
           if (isModelUnavailable(e2.message)) continue;
           throw e2;
@@ -512,7 +559,7 @@ async function sendToGroq(messages, onToken, startIndex) {
     try {
       await groqAttempt(GROQ_MODELS[i].id, messages, onToken);
     } catch (e) {
-      if (e.message === 'RATE_LIMIT') throw e;
+      if (e.rateLimited) throw e;
       lastErr = e;
       if (!isModelUnavailable(e.message)) throw e;
       continue;
@@ -538,7 +585,17 @@ async function groqAttempt(model, messages, onToken) {
       stream: true
     })
   });
-  if (res.status === 429) throw new Error('RATE_LIMIT');
+  if (res.status === 429) {
+    let detail = 'quota reached';
+    try {
+      const j = await res.json();
+      if (j && j.error && j.error.message) detail = j.error.message;
+    } catch (e) { /* status only */ }
+    const err = new Error('RATE_LIMIT');
+    err.rateLimited = true;
+    err.detail = detail;
+    throw err;
+  }
   if (!res.ok) {
     let msg = 'HTTP ' + res.status;
     try {
@@ -791,31 +848,38 @@ async function send(rawText) {
 
   let reply = '';
   const token = (chunk) => {
+    if (typeof chunk !== 'string') return;
     reply += chunk;
     bodyEl.textContent = reply;
     scrollChat();
   };
   const groqStart = () => (pendingAttachments.length ? firstVisionIndex('groq') : undefined);
-  const fallbackToGroq = async (geminiError) => {
-    if (!settings.groqKey) throw new Error(geminiError + ' and no Groq key is set.');
-    if (hasPdf) throw new Error(geminiError + ' (and PDF attachments can\u2019t fall back to Groq).');
+  const fallbackToGroq = async (geminiErr) => {
+    if (!settings.groqKey) throw new Error((geminiErr.rateLimited
+      ? 'Gemini is rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
+      : geminiErr.message) + ', and no Groq key is set to fall back to.');
+    if (hasPdf) throw new Error(geminiErr.message + ' (and PDF attachments can\u2019t fall back to Groq).');
     usedLabel = 'groq · fallback · ' + getActiveModel('groq');
     bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
     const noteEl = document.createElement('div');
     noteEl.className = 'fallback-note';
-    noteEl.textContent = 'Gemini error: ' + geminiError;
+    const reason = geminiErr.rateLimited
+      ? 'Gemini is temporarily rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
+      : 'Gemini error: ' + geminiErr.message;
+    noteEl.textContent = reason + ' — using Groq.';
     bubble.appendChild(noteEl);
-    toast('Gemini: ' + geminiError + ' — using Groq.');
+    toast(reason + ' — using Groq.');
     await sendToGroq(buildMessages('groq', text + note, pendingAttachments), token, groqStart());
   };
 
   if (provider === 'gemini') {
     if (!settings.geminiKey) { fail('Add your Gemini API key in Settings (gear icon).'); return; }
+    const useLive = needsLiveInfo(text) && !pendingAttachments.length;
     try {
-      await sendToGemini(messages, token);
+      await sendToGemini(messages, token, useLive);
     } catch (err) {
       try {
-        await fallbackToGroq(err.message);
+        await fallbackToGroq(err);
       } catch (err2) {
         fail(err2.message);
         return;
@@ -826,7 +890,9 @@ async function send(rawText) {
     try {
       await sendToGroq(messages, token, groqStart());
     } catch (err) {
-      fail(err.message);
+      fail(err.rateLimited
+        ? 'Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.'
+        : err.message);
       return;
     }
   }
@@ -984,7 +1050,7 @@ function openMemory() {
 
 function init() {
   try {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?ev=v4', { updateViaCache: 'none' });
   } catch (e) { /* ignore */ }
   if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
 
