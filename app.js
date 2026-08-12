@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -437,7 +437,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
-  'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast'];
+  'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
 const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday)\b/i;
@@ -1308,6 +1308,21 @@ function openMemory() {
   show(el['modal-memory']);
 }
 
+const HELLO_MSG = 'Hey. E.V here, your personal AI. Type a message or tap the reactor to talk to me.';
+
+function startNewConversation() {
+  if (busy) return;
+  if (!window.confirm('Start a new conversation? The current chat will be cleared. Your saved memory and settings are kept.')) return;
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  history = [];
+  saveJSON(STORAGE.history, history);
+  setPendingAttachments([]);
+  el.chat.innerHTML = '';
+  addMsg('ev', HELLO_MSG);
+  if (settings.voice) speak(HELLO_MSG);
+  toast('New conversation started.');
+}
+
 function init() {
   if (sessionStorage.getItem('ev.sw-reload')) {
     sessionStorage.removeItem('ev.sw-reload');
@@ -1364,6 +1379,7 @@ function init() {
   el['btn-reset-gemini'].addEventListener('click', () => resetModel('gemini'));
   el['btn-reset-groq'].addEventListener('click', () => resetModel('groq'));
   el['btn-memory'].addEventListener('click', openMemory);
+  el['btn-new'].addEventListener('click', startNewConversation);
   el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
   el['btn-memory-clear'].addEventListener('click', () => {
     facts = [];
@@ -1375,9 +1391,8 @@ function init() {
 
   setReactor('');
   if (!history.length) {
-    const hello = 'Hey. E.V here, your personal AI. Type a message or tap the reactor to talk to me.';
-    addMsg('ev', hello);
-    if (settings.voice) speak(hello);
+    addMsg('ev', HELLO_MSG);
+    if (settings.voice) speak(HELLO_MSG);
   } else {
     renderHistory();
     addMsg('ev', 'Welcome back.');
