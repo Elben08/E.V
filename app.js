@@ -100,6 +100,8 @@ const DEFAULT_SETTINGS = {
   voice: true
 };
 
+const APP_VERSION = 'v7';
+
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -326,7 +328,7 @@ function isModelUnavailable(message) {
 
 const el = {};
 const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'attach-tray', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
-  'modal-settings', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice',
+  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast'];
@@ -920,6 +922,7 @@ async function send(rawText) {
 }
 
 function openSettings() {
+  el['app-version'].textContent = 'Version ' + APP_VERSION;
   el['set-gemini'].value = settings.geminiKey;
   el['set-groq'].value = settings.groqKey;
   el['set-provider'].value = settings.provider;
@@ -1054,8 +1057,28 @@ function openMemory() {
 }
 
 function init() {
+  if (sessionStorage.getItem('ev.sw-reload')) {
+    sessionStorage.removeItem('ev.sw-reload');
+    el['text-input'].value = sessionStorage.getItem('ev.sw-text') || '';
+    sessionStorage.removeItem('ev.sw-text');
+    updateSendDisabled();
+  }
   try {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?ev=v6', { updateViaCache: 'none' });
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js?ev=' + APP_VERSION, { updateViaCache: 'none' }).then((reg) => {
+        reg.addEventListener('updatefound', () => {
+          const nsw = reg.installing;
+          if (!nsw) return;
+          nsw.addEventListener('statechange', () => {
+            if (nsw.state === 'installed' && navigator.serviceWorker.controller) {
+              sessionStorage.setItem('ev.sw-text', el['text-input'].value);
+              sessionStorage.setItem('ev.sw-reload', '1');
+              window.location.reload();
+            }
+          });
+        });
+      });
+    }
   } catch (e) { /* ignore */ }
   if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
 
