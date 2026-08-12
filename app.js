@@ -413,28 +413,33 @@ async function readSSE(response, onData, onError) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  const handleLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (line.indexOf('data:') !== 0) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') return;
+    try {
+      const json = JSON.parse(payload);
+      if (json && json.error) {
+        if (onError) onError(json.error);
+        return;
+      }
+      onData(json);
+    } catch (e) { /* skip partial */ }
+  };
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let idx;
     while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx).trim();
+      const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
-      if (line.indexOf('data:') === 0) {
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        try {
-          const json = JSON.parse(payload);
-          if (json && json.error) {
-            if (onError) onError(json.error);
-            else return;
-          }
-          onData(json);
-        } catch (e) { /* skip partial */ }
-      }
+      handleLine(line);
     }
   }
+  buffer += decoder.decode();
+  if (buffer.trim()) handleLine(buffer);
 }
 
 async function sendToGemini(messages, onToken, liveInfo) {
@@ -443,7 +448,7 @@ async function sendToGemini(messages, onToken, liveInfo) {
   const body = {
     contents: messages,
     systemInstruction: { parts: [{ text: buildSystem('gemini') }] },
-    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
   };
   if (liveInfo) body.tools = [{ googleSearch: {} }];
 
@@ -581,7 +586,7 @@ async function groqAttempt(model, messages, onToken) {
       model: model,
       messages: messages,
       temperature: 0.7,
-      max_tokens: 1024,
+      max_tokens: 8192,
       stream: true
     })
   });
@@ -1050,7 +1055,7 @@ function openMemory() {
 
 function init() {
   try {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?ev=v5', { updateViaCache: 'none' });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?ev=v6', { updateViaCache: 'none' });
   } catch (e) { /* ignore */ }
   if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
 
