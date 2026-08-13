@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -230,6 +230,14 @@ function isTooLargeError(msg) {
   return /request too large|reduce message size|tokens per minute|tpm/i.test(msg || '');
 }
 
+const RATE_HINT = ' This usually clears in a minute \u2014 if it persists, check your free-tier quota at aistudio.google.com.';
+
+function friendlyRateLimit(label, err) {
+  return label + ' is rate-limited right now (' + (err && err.detail ? err.detail : 'quota reached') + '). Try again in a moment.';
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function estimateMessagesTokens(messages) {
   let total = 0;
   for (const m of messages) {
@@ -273,13 +281,22 @@ async function groqSendFitted(userText, attachments, token, maxTokens) {
   const fit = fitGroqTextBudget(userText, attachments);
   if (!fit.fits) throw new Error(TOO_LARGE_MSG);
   const send = (msgs) => sendToGroq(msgs, token, start, maxTokens);
+  let lastErr = null;
   try {
     await send(fit.messages);
+    return;
   } catch (err) {
     if (!isTooLargeError(err.message)) throw err;
-    const tight = fitGroqTextBudget(userText, attachments, GROQ_TIGHT_TEXT_BUDGET);
-    if (!tight.fits) throw new Error(TOO_LARGE_MSG);
+    lastErr = err;
+  }
+  await sleep(1500);
+  const tight = fitGroqTextBudget(userText, attachments, GROQ_TIGHT_TEXT_BUDGET);
+  if (!tight.fits) throw lastErr.rateLimited ? lastErr : new Error(TOO_LARGE_MSG);
+  try {
     await send(tight.messages);
+  } catch (err2) {
+    if (!isTooLargeError(err2.message)) throw err2;
+    throw err2.rateLimited ? err2 : lastErr.rateLimited ? lastErr : new Error(TOO_LARGE_MSG);
   }
 }
 
@@ -656,8 +673,8 @@ async function sendToGemini(messages, onToken, liveInfo) {
   };
 
   const recoverFromRateLimit = async (model) => {
-    for (let t = 1; t <= 2; t++) {
-      await sleep(1200 * t);
+    for (let t = 1; t <= 3; t++) {
+      await sleep(3000 * t);
       try {
         await attempt(model, 'streamGenerateContent?alt=sse', false);
         return true;
@@ -681,17 +698,24 @@ async function sendToGemini(messages, onToken, liveInfo) {
       }
       lastErr = e;
       if (!isModelUnavailable(e.message)) {
-        try {
-          await attempt(model, 'generateContent', false);
-        } catch (e2) {
-          if (e2.rateLimited) {
-            if (await recoverFromRateLimit(model)) { setActiveModel('gemini', i); return; }
-            throw e2;
+        let recovered = false;
+        for (let r = 0; r < 3 && !recovered; r++) {
+          try {
+            await attempt(model, 'generateContent', false);
+            recovered = true;
+          } catch (e2) {
+            if (e2.rateLimited) {
+              if (await recoverFromRateLimit(model)) { setActiveModel('gemini', i); return; }
+              throw e2;
+            }
+            lastErr = e2;
+            if (isModelUnavailable(e2.message)) break;
+            if (!/MALFORMED_FUNCTION_CALL/.test(e2.message)) throw e2;
           }
-          lastErr = e2;
-          if (isModelUnavailable(e2.message)) continue;
-          throw e2;
         }
+        if (recovered) { setActiveModel('gemini', i); return; }
+        if (isModelUnavailable(lastErr.message)) continue;
+        throw lastErr;
       } else {
         continue;
       }
@@ -737,31 +761,37 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
       stream: true
     })
   });
-  if (res.status === 429) {
-    let detail = 'quota reached';
+  const groqDetail = async (r) => {
+    let msg = 'HTTP ' + r.status;
     try {
-      const j = await res.json();
-      if (j && j.error && j.error.message) detail = j.error.message;
-    } catch (e) { /* status only */ }
-    const err = new Error('RATE_LIMIT');
-    err.rateLimited = true;
-    err.detail = detail;
-    throw err;
-  }
-  if (!res.ok) {
-    let msg = 'HTTP ' + res.status;
-    try {
-      const j = await res.json();
+      const j = await r.json();
       if (j && j.error && j.error.message) msg = j.error.message;
     } catch (e) { /* status only */ }
-    throw new Error(msg);
+    return msg;
+  };
+  const rateLimitedError = (detail) => {
+    const err = new Error(detail && /tokens per minute|tpm|rate ?limit/i.test(detail) ? detail : 'RATE_LIMIT');
+    err.rateLimited = true;
+    err.detail = detail || 'quota reached';
+    return err;
+  };
+  if (res.status === 429) throw rateLimitedError(await groqDetail(res));
+  if (!res.ok) {
+    const detail = await groqDetail(res);
+    if (/tokens per minute|tpm|rate ?limit/i.test(detail)) throw rateLimitedError(detail);
+    throw new Error(detail);
   }
-  await readSSE(res, (j) => {
-    const d = j.choices && j.choices[0] && j.choices[0].delta;
-    if (d && typeof d.content === 'string' && d.content) onToken(d.content);
-  }, (err) => {
-    throw new Error((err && err.message) || 'Groq stream error');
-  });
+  try {
+    await readSSE(res, (j) => {
+      const d = j.choices && j.choices[0] && j.choices[0].delta;
+      if (d && typeof d.content === 'string' && d.content) onToken(d.content);
+    }, (err) => {
+      throw new Error((err && err.message) || 'Groq stream error');
+    });
+  } catch (e) {
+    if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
+    throw e;
+  }
 }
 
 function show(node) { node.classList.remove('hidden'); }
@@ -1177,23 +1207,27 @@ async function performReply(bubble, ctx) {
     scrollChat();
   };
   const groqStart = () => (attachments.length ? firstVisionIndex('groq') : undefined);
+  const geminiFailure = (geminiErr) => geminiErr.rateLimited
+    ? friendlyRateLimit('Gemini', geminiErr)
+    : 'Gemini error: ' + geminiErr.message;
+
   const fallbackToGroq = async (geminiErr) => {
-    if (!settings.groqKey) throw new Error((geminiErr.rateLimited
-      ? 'Gemini is rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
-      : geminiErr.message) + ', and no Groq key is set to fall back to.');
-    if (curHasPdf) throw new Error(geminiErr.message + ' (and PDF attachments can\u2019t fall back to Groq).');
+    const gFail = geminiFailure(geminiErr);
+    if (!settings.groqKey) throw new Error(gFail + ', and no Groq key is set to fall back to.' + (geminiErr.rateLimited ? RATE_HINT : ''));
+    if (curHasPdf) throw new Error(gFail + ' (and PDF attachments can\u2019t fall back to Groq).');
     if (curHasImage) {
       const fits = await fitGroqBudget(attachments, ctx.userText);
-      if (!fits) throw new Error(geminiErr.message + ' (and the image is too large for Groq\u2019s free limit even after compression).');
+      if (!fits) throw new Error(gFail + ' (and the image is too large for Groq\u2019s free limit even after compression).');
       await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens);
     } else {
       try {
         await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
       } catch (err) {
+        if (err.rateLimited) throw new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.' + RATE_HINT);
         if (isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
-          throw new Error(geminiErr.message + ' (and ' + TOO_LARGE_MSG + ')');
+          throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this conversation \u2014 try a shorter message or a new conversation.');
         }
-        throw new Error(geminiErr.message + ' \u2014 Groq also failed: ' + err.message);
+        throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
       }
     }
     usedLabel = 'groq · fallback · ' + getActiveModel('groq');
@@ -1228,10 +1262,7 @@ async function performReply(bubble, ctx) {
         await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
       }
     } catch (err) {
-      let msg;
-      if (err.rateLimited) msg = 'Groq is rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.';
-      else msg = err.message;
-      failThis(msg);
+      failThis(err.rateLimited ? friendlyRateLimit('Groq', err) + RATE_HINT : err.message);
       return;
     }
   }
