@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -458,7 +458,7 @@ function isModelUnavailable(message) {
 
 const el = {};
 const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'attach-tray', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
-  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice',
+  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice', 'set-macro-webhook',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new'];
