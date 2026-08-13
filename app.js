@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v23';
+const APP_VERSION = 'v24';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -971,7 +971,7 @@ function triggerMacro(action) {
   return null;
 }
 
-function formatEventDate(raw) {
+function formatEventDate(raw, allDay) {
   let s = String(raw).trim();
   if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
     const tz = s.match(/\s?([+-]?\d{2}):?(\d{2})\s*$/);
@@ -983,6 +983,7 @@ function formatEventDate(raw) {
   const d = new Date(s);
   if (isNaN(d.getTime())) return raw;
   const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  if (allDay) return date;
   const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   return date + ' · ' + time;
 }
@@ -990,7 +991,8 @@ function formatEventDate(raw) {
 function eventEntry(entry) {
   const title = entry && entry.Title ? String(entry.Title).trim() : '';
   const start = entry && entry.Start ? String(entry.Start).trim() : '';
-  return title ? { title, date: start || null } : null;
+  const allDay = !!entry && String(entry['All day event'] || '') === 'true';
+  return title ? { title, date: start || null, allDay } : null;
 }
 
 function parseCalendarFragment() {
@@ -1481,8 +1483,8 @@ function init() {
   if (calendarEvent) {
     let label, spoken;
     if (calendarEvent.events) {
-      label = calendarEvent.events.map(e => '• ' + e.title + (e.date ? ' · ' + formatEventDate(e.date) : '')).join('\n');
-      spoken = calendarEvent.events.map(e => e.title + ', ' + (e.date ? formatEventDate(e.date) : 'no date')).join('. ');
+      label = calendarEvent.events.map(e => '• ' + e.title + (e.date ? ' · ' + formatEventDate(e.date, e.allDay) : '')).join('\n');
+      spoken = calendarEvent.events.map(e => e.title + ', ' + (e.date ? formatEventDate(e.date, e.allDay) : 'no date')).join('. ');
     } else {
       label = calendarEvent.date
         ? calendarEvent.title + ' · ' + formatEventDate(calendarEvent.date)
