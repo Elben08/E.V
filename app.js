@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v20';
+const APP_VERSION = 'v21';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -971,16 +971,28 @@ function triggerMacro(action) {
   return null;
 }
 
+function formatEventDate(raw) {
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
+  const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return date + ' · ' + time;
+}
+
 function parseCalendarFragment() {
   const params = new URLSearchParams(window.location.search);
-  if (params.has('next')) {
-    return params.get('next').trim() || null;
+  if (params.has('next') || params.has('date')) {
+    return {
+      title: (params.get('next') || '').trim() || null,
+      date: (params.get('date') || '').trim() || null
+    };
   }
   const m = window.location.hash.match(/^#next=(.*)$/);
   if (!m) return null;
   let s = m[1];
   try { s = decodeURIComponent(s); } catch (e) { /* keep raw */ }
-  return s.replace(/\+/g, ' ').trim() || null;
+  const title = s.replace(/\+/g, ' ').trim() || null;
+  return title ? { title, date: null } : null;
 }
 
 function scheduleReminder(ms, text) {
@@ -1442,13 +1454,17 @@ function init() {
   }
   const calendarEvent = parseCalendarFragment();
   if (calendarEvent) {
-    history.push({ role: 'user', text: '[Calendar lookup result] ' + calendarEvent, sensitive: true });
+    const label = calendarEvent.date
+      ? calendarEvent.title + ' · ' + formatEventDate(calendarEvent.date)
+      : calendarEvent.title;
+    history.push({ role: 'user', text: '[Calendar lookup result] ' + label, sensitive: true });
     trimHistory();
     saveJSON(STORAGE.history, history);
-    addMsg('ev', 'Calendar: ' + calendarEvent);
-    if (settings.voice) speak('Calendar: ' + calendarEvent);
+    addMsg('ev', 'Calendar: ' + label);
+    if (settings.voice) speak('Calendar: ' + label);
   }
-  if (window.location.hash.match(/^#next=/) || new URLSearchParams(window.location.search).has('next')) {
+  if (window.location.hash.match(/^#next=/) || new URLSearchParams(window.location.search).has('next')
+      || new URLSearchParams(window.location.search).has('date')) {
     try { history.replaceState(null, '', window.location.pathname); } catch (e) { /* ignore */ }
   }
 }

@@ -41,17 +41,19 @@ Add actions in this order, then fix positions with **long-press → drag**:
    - **Output Array Variable**: create a **local** array variable `evEvents`
    - OK.
 3. **+ Add Action** → search "website" → **Open Website / HTTP GET**:
-   - URL: `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}`
-   - Keep **URL encode parameters** enabled (default) — this auto-encodes the event title in the query string, so titles with spaces, `&`, `#`, `'`, `%` arrive safely in E.V.
+   - URL: `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}`
+   - Keep **URL encode parameters** enabled (default) — this auto-encodes the title and start date in the query string, so values with spaces, `&`, `#`, `'`, `%` arrive safely in E.V.
    - OK.
 4. **Reorder** so the list reads exactly:
    ```
    If Clause: {lv=cmd} = calendar
    Get Calendar Events → evEvents
-   Open Website → https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}
+   Open Website → https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}
    End If
    ```
    (Drag Get Calendar Events and Open Website up if they landed below End If.)
+
+> E.V formats the `date` value itself (e.g. `Thu, 13 Aug · 09:00`), so the raw `Start` format from MacroDroid (`2026-07-23T09:00:00+0100`) never shows.
 
 ## 5. Enable the macro + permission
 

@@ -78,7 +78,7 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
    - **Trigger: Webhook (URL)** → Identifier `ev_cmd`. This gives you `https://trigger.macrodroid.com/<device-id>/ev_cmd`. If the trigger shows a PRO badge in the free version, stop here and let me know — we'll need a different approach.
    - **Global variable**: create a string variable named `cmd` (the webhook fills it from `?cmd=...`).
    - **Actions** (If / Else-If chain on `{v=cmd}`):
-     - If `{v=cmd}` = `calendar` → **Get Calendar Events** (Select Calendar: Any; Start Offset 0; Duration 7 days; output to an **Array** variable `evEvents`) → **Open Website** → `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}` (keep **URL encode parameters** ON — it encodes the event title for you)
+     - If `{v=cmd}` = `calendar` → **Get Calendar Events** (Select Calendar: Any; Start Offset 0; Duration 7 days; output to an **Array** variable `evEvents`) → **Open Website** → `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}` (keep **URL encode parameters** ON — it encodes the title and date for you; E.V formats the date nicely, e.g. `Thu, 13 Aug · 09:00`)
      - Else-If `{v=cmd}` = `flashlight.on` → **Set Flashlight: On**
      - Else-If `{v=cmd}` = `flashlight.off` → **Set Flashlight: Off**
      - (add `wifi.on` / `wifi.off` / `bluetooth.on` / `bluetooth.off` branches the same way if you want those)
