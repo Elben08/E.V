@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v24';
+const APP_VERSION = 'v25';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -920,6 +920,23 @@ function speak(text) {
   window.speechSynthesis.speak(u);
 }
 
+function speakWhenReady(text, maxWaitMs) {
+  if (!settings.voice || !('speechSynthesis' in window)) return;
+  if (document.visibilityState === 'visible') { speak(text); return; }
+  let done = false;
+  let timer = 0;
+  const fire = () => {
+    if (done) return;
+    done = true;
+    document.removeEventListener('visibilitychange', onVis);
+    clearTimeout(timer);
+    speak(text);
+  };
+  const onVis = () => { if (document.visibilityState === 'visible') fire(); };
+  timer = setTimeout(() => { if (document.visibilityState === 'visible') fire(); }, maxWaitMs);
+  document.addEventListener('visibilitychange', onVis);
+}
+
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let listening = false;
@@ -1020,6 +1037,38 @@ function parseCalendarFragment() {
   try { s = decodeURIComponent(s); } catch (e) { /* keep raw */ }
   const title = s.replace(/\+/g, ' ').trim() || null;
   return title ? { title, date: null, events: null } : null;
+}
+
+function renderCalendarResult(calendarEvent) {
+  let label, spoken, header;
+  if (calendarEvent.events) {
+    label = calendarEvent.events.map(e => '• ' + e.title + (e.date ? ' · ' + formatEventDate(e.date, e.allDay) : '')).join('\n');
+    spoken = calendarEvent.events.map(e => e.title + ', ' + (e.date ? formatEventDate(e.date, e.allDay) : 'no date')).join('. ');
+    header = 'Calendar (' + calendarEvent.events.length + ' upcoming):\n';
+  } else {
+    label = calendarEvent.date
+      ? calendarEvent.title + ' · ' + formatEventDate(calendarEvent.date)
+      : calendarEvent.title;
+    spoken = label;
+    header = 'Calendar: ';
+  }
+  const entry = '[Calendar lookup result] ' + label;
+  if (!history.some(h => h.text === entry)) {
+    history.push({ role: 'user', text: entry, sensitive: true });
+    trimHistory();
+    saveJSON(STORAGE.history, history);
+  }
+  addMsg('ev', header + label);
+  if (settings.voice) speakWhenReady('Calendar: ' + spoken, 3000);
+}
+
+const calendarChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('ev-calendar') : null;
+if (calendarChannel) {
+  calendarChannel.onmessage = (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'calendar' || document.visibilityState !== 'visible') return;
+    renderCalendarResult({ title: m.title, date: m.date, events: m.events });
+  };
 }
 
 function scheduleReminder(ms, text) {
@@ -1481,22 +1530,12 @@ function init() {
   }
   const calendarEvent = parseCalendarFragment();
   if (calendarEvent) {
-    let label, spoken;
-    if (calendarEvent.events) {
-      label = calendarEvent.events.map(e => '• ' + e.title + (e.date ? ' · ' + formatEventDate(e.date, e.allDay) : '')).join('\n');
-      spoken = calendarEvent.events.map(e => e.title + ', ' + (e.date ? formatEventDate(e.date, e.allDay) : 'no date')).join('. ');
-    } else {
-      label = calendarEvent.date
-        ? calendarEvent.title + ' · ' + formatEventDate(calendarEvent.date)
-        : calendarEvent.title;
-      spoken = label;
+    renderCalendarResult(calendarEvent);
+    if (calendarChannel) {
+      try {
+        calendarChannel.postMessage({ type: 'calendar', title: calendarEvent.title, date: calendarEvent.date, events: calendarEvent.events });
+      } catch (e) { /* ignore */ }
     }
-    const header = calendarEvent.events ? 'Calendar (' + calendarEvent.events.length + ' upcoming):\n' : 'Calendar: ';
-    history.push({ role: 'user', text: '[Calendar lookup result] ' + label, sensitive: true });
-    trimHistory();
-    saveJSON(STORAGE.history, history);
-    addMsg('ev', header + label);
-    if (settings.voice) speak('Calendar: ' + spoken);
   }
   if (window.location.hash.match(/^#next=/) || new URLSearchParams(window.location.search).has('next')
       || new URLSearchParams(window.location.search).has('date')) {

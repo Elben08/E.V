@@ -1,4 +1,4 @@
-const CACHE = 'ev-cache-v24';
+const CACHE = 'ev-cache-v25';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (event) => {
