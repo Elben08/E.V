@@ -90,7 +90,8 @@ const STORAGE = {
   facts: 'ev.facts',
   privateMode: 'ev.privateMode',
   geminiModel: 'ev.geminiModel',
-  groqModel: 'ev.groqModel'
+  groqModel: 'ev.groqModel',
+  conversationSummary: 'ev.conversationSummary'
 };
 
 const DEFAULT_SETTINGS = {
@@ -102,7 +103,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v26';
+const APP_VERSION = 'v27';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -129,6 +130,9 @@ let settings = loadSettings();
 let history = loadJSON(STORAGE.history, []);
 let facts = loadJSON(STORAGE.facts, []);
 let privateMode = loadJSON(STORAGE.privateMode, false);
+let conversationSummary = loadJSON(STORAGE.conversationSummary, '');
+let summarizing = false;
+let lastSummaryLen = 0;
 const MAX_ATTACHMENTS = 5;
 const MAX_IMG_MB = 7;
 const MAX_PDF_MB = 20;
@@ -161,9 +165,9 @@ function readFileAsDataURL(file) {
   });
 }
 
-function estimateTokens(text) {
+function estimateTokens(text, accurate) {
   if (!text) return 0;
-  return Math.ceil(text.length / 4);
+  return accurate ? Math.ceil((text.length / 4) * 1.7) : Math.ceil(text.length / 4);
 }
 
 function loadImage(src) {
@@ -223,6 +227,10 @@ async function fitGroqBudget(attachments, text) {
 
 const GROQ_TEXT_BUDGET = 4400;
 const GROQ_TIGHT_TEXT_BUDGET = 3600;
+const SUMMARY_TRIM_EST = 3000;
+const SUMMARY_KEEP = 8;
+const SUMMARY_MIN_GAP = 8;
+const SUMMARY_PROMPT = 'You are E.V\u2019s conversation-compactor. Combine the conversation below into one tight, continuous summary that lets a later AI recover full context: what the user asked, key facts, decisions, and the user\u2019s current goals/state. Keep it under ~150 words. Preserve exact names and dates. Do not invent new information.\n\n';
 const TOO_LARGE_MSG = 'The request is too large for Groq\u2019s free limit. Try a shorter conversation, or ask Gemini instead.';
 const FAILED_MSG_PLACEHOLDER = '[previous reply failed \u2014 no answer]';
 
@@ -238,14 +246,14 @@ function friendlyRateLimit(label, err) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function estimateMessagesTokens(messages) {
+function estimateMessagesTokens(messages, accurate) {
   let total = 0;
   for (const m of messages) {
-    if (typeof m.content === 'string') total += estimateTokens(m.content);
+    if (typeof m.content === 'string') total += estimateTokens(m.content, accurate);
     else if (Array.isArray(m.content)) {
       for (const p of m.content) {
-        if (typeof p === 'string') total += estimateTokens(p);
-        else if (p && typeof p.text === 'string') total += estimateTokens(p.text);
+        if (typeof p === 'string') total += estimateTokens(p, accurate);
+        else if (p && typeof p.text === 'string') total += estimateTokens(p.text, accurate);
         else if (p && p.type === 'image_url') total += 800;
       }
     }
@@ -253,17 +261,17 @@ function estimateMessagesTokens(messages) {
   return total;
 }
 
-function fitGroqTextBudget(userText, attachments, budget) {
+function fitGroqTextBudget(userText, attachments, budget, accurate) {
   const b = budget || GROQ_TEXT_BUDGET;
   const messages = buildMessages('groq', userText, attachments);
-  if (estimateMessagesTokens(messages) <= b) {
+  if (estimateMessagesTokens(messages, accurate) <= b) {
     return { messages: messages, fits: true, trimmed: false, estimated: 0 };
   }
   const histArr = history.slice();
   for (let keep = histArr.length - 1; keep >= 0; keep--) {
     const hist = keep === 0 ? [] : histArr.slice(histArr.length - keep);
     const m = buildMessages('groq', userText, attachments, hist);
-    if (estimateMessagesTokens(m) <= b) {
+    if (estimateMessagesTokens(m, accurate) <= b) {
       const last = m[m.length - 1];
       const note = '\n[Note: the earlier part of this conversation was trimmed to fit Groq\u2019s free limit.]';
       if (last && last.content) {
@@ -273,7 +281,7 @@ function fitGroqTextBudget(userText, attachments, budget) {
       return { messages: m, fits: true, trimmed: true, estimated: 0 };
     }
   }
-  return { messages: messages, fits: false, trimmed: false, estimated: estimateMessagesTokens(messages) };
+  return { messages: messages, fits: false, trimmed: false, estimated: estimateMessagesTokens(messages, accurate) };
 }
 
 async function groqSendFitted(userText, attachments, token, maxTokens) {
@@ -290,13 +298,61 @@ async function groqSendFitted(userText, attachments, token, maxTokens) {
     lastErr = err;
   }
   await sleep(1500);
-  const tight = fitGroqTextBudget(userText, attachments, GROQ_TIGHT_TEXT_BUDGET);
+  const tight = fitGroqTextBudget(userText, attachments, GROQ_TIGHT_TEXT_BUDGET, true);
   if (!tight.fits) throw lastErr.rateLimited ? lastErr : new Error(TOO_LARGE_MSG);
   try {
     await send(tight.messages);
   } catch (err2) {
     if (!isTooLargeError(err2.message)) throw err2;
     throw err2.rateLimited ? err2 : lastErr.rateLimited ? lastErr : new Error(TOO_LARGE_MSG);
+  }
+}
+
+async function summarizeOnce(provider, content) {
+  const acc = [];
+  const collect = (chunk) => { if (typeof chunk === 'string') acc.push(chunk); };
+  if (provider === 'groq') {
+    await sendToGroq([
+      { role: 'system', content: SUMMARY_PROMPT + 'Conversation so far:\n' + content },
+      { role: 'user', content: 'Produce the summary now.' }
+    ], collect, undefined, 800);
+  } else {
+    await sendToGemini([
+      { role: 'user', parts: [{ text: SUMMARY_PROMPT + 'Conversation so far:\n' + content + '\n\nProduce the summary now.' }] }
+    ], collect, false);
+  }
+  const text = acc.join('').trim();
+  if (!text) throw new Error('Empty summary');
+  return text;
+}
+
+async function maybeSummarizeHistory(providerSucceeded) {
+  if (summarizing) return;
+  if (history.length < SUMMARY_KEEP + 2) return;
+  if (history.length - lastSummaryLen < SUMMARY_MIN_GAP) return;
+  const old = history.slice(0, history.length - SUMMARY_KEEP);
+  const safe = old.filter((h) => !h.sensitive && !h.failed && h.text);
+  if (!safe.length) return;
+  let est = 0;
+  for (const h of safe) est += estimateTokens(h.text);
+  if (est <= SUMMARY_TRIM_EST) return;
+  summarizing = true;
+  const targetLen = history.length;
+  try {
+    const lines = safe.map((h) => (h.role === 'user' ? 'User: ' : 'E.V: ') + h.text).join('\n');
+    const content = (conversationSummary ? 'Previous summary:\n' + conversationSummary + '\n\n' : '') + lines;
+    const text = await summarizeOnce(providerSucceeded === 'groq' ? 'groq' : 'gemini', content);
+    conversationSummary = text;
+    saveJSON(STORAGE.conversationSummary, conversationSummary);
+    if (history.length === targetLen) {
+      history = history.slice(-SUMMARY_KEEP);
+      saveJSON(STORAGE.history, history);
+      lastSummaryLen = history.length;
+    }
+  } catch (e) {
+    /* best-effort: keep history and summary as-is on failure */
+  } finally {
+    summarizing = false;
   }
 }
 
@@ -518,6 +574,7 @@ function visibleFacts(provider) {
 function buildSystem(provider) {
   const f = visibleFacts(provider);
   let out = SYSTEM_PROMPT;
+  if (conversationSummary) out += '\n\nEarlier conversation summary:\n' + conversationSummary;
   if (f.length) {
     const list = f.map((x) => '- ' + (x.sensitive ? '[PRIVATE] ' : '') + x.text).join('\n');
     out += '\n\nFacts about the user:\n' + list;
@@ -1200,6 +1257,7 @@ async function performReply(bubble, ctx) {
   };
 
   let reply = '';
+  let succeededProvider = '';
   const token = (chunk) => {
     if (typeof chunk !== 'string') return;
     reply += chunk;
@@ -1240,12 +1298,14 @@ async function performReply(bubble, ctx) {
     noteEl.textContent = reasonText + ' — using Groq.';
     bubble.appendChild(noteEl);
     toast(reasonText + ' — using Groq.');
+    succeededProvider = 'groq';
   };
 
   if (ctx.provider === 'gemini') {
     const useLive = needsLiveInfo(ctx.userText) && !attachments.length;
     try {
       await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, useLive);
+      succeededProvider = 'gemini';
     } catch (err) {
       try {
         await fallbackToGroq(err);
@@ -1265,6 +1325,7 @@ async function performReply(bubble, ctx) {
       failThis(err.rateLimited ? friendlyRateLimit('Groq', err) + RATE_HINT : err.message);
       return;
     }
+    succeededProvider = 'groq';
   }
 
   busy = false;
@@ -1276,6 +1337,7 @@ async function performReply(bubble, ctx) {
   bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
   writeEvEntry(ctx.entryRef, { role: 'ev', text: cleaned, sensitive: !!ctx.sensitive, provider: usedLabel });
   extractFacts(ctx.userText);
+  if (succeededProvider) maybeSummarizeHistory(succeededProvider).catch(() => {});
   if (ctx.clearAttachmentsOnSuccess) setPendingAttachments([]);
   if (settings.voice) speak(cleaned);
 }
@@ -1478,6 +1540,9 @@ function startNewConversation() {
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   history = [];
   saveJSON(STORAGE.history, history);
+  conversationSummary = '';
+  saveJSON(STORAGE.conversationSummary, conversationSummary);
+  lastSummaryLen = 0;
   setPendingAttachments([]);
   el.chat.innerHTML = '';
   addMsg('ev', HELLO_MSG);
