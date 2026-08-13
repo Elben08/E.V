@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v22';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -972,7 +972,15 @@ function triggerMacro(action) {
 }
 
 function formatEventDate(raw) {
-  const d = new Date(raw);
+  let s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    const tz = s.match(/\s?([+-]?\d{2}):?(\d{2})\s*$/);
+    if (tz) {
+      const sign = /^[+-]/.test(tz[1]) ? '' : '+';
+      s = s.slice(0, tz.index) + sign + tz[1].replace(/\D/g, '') + ':' + tz[2];
+    }
+  }
+  const d = new Date(s);
   if (isNaN(d.getTime())) return raw;
   const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });

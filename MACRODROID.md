@@ -53,7 +53,7 @@ Add actions in this order, then fix positions with **long-press → drag**:
    ```
    (Drag Get Calendar Events and Open Website up if they landed below End If.)
 
-> E.V formats the `date` value itself (e.g. `Thu, 13 Aug · 09:00`), so the raw `Start` format from MacroDroid (`2026-07-23T09:00:00+0100`) never shows.
+> E.V formats the `date` value itself (e.g. `Thu, 13 Aug · 09:00`), so the raw `Start` format from MacroDroid never shows. Some devices emit the offset without a sign/colon (`2026-08-14T08:00:00 0800`) — E.V normalizes that too (v22+).
 
 ## 5. Enable the macro + permission
 
