@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v22';
+const APP_VERSION = 'v23';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -987,12 +987,29 @@ function formatEventDate(raw) {
   return date + ' · ' + time;
 }
 
+function eventEntry(entry) {
+  const title = entry && entry.Title ? String(entry.Title).trim() : '';
+  const start = entry && entry.Start ? String(entry.Start).trim() : '';
+  return title ? { title, date: start || null } : null;
+}
+
 function parseCalendarFragment() {
   const params = new URLSearchParams(window.location.search);
   if (params.has('next') || params.has('date')) {
+    const next = (params.get('next') || '').trim();
+    if (next.charAt(0) === '[' || next.charAt(0) === '{') {
+      let events = null;
+      try {
+        const parsed = JSON.parse(next);
+        const entries = Array.isArray(parsed) ? parsed : Object.keys(parsed || {}).map(k => parsed[k]);
+        events = entries.map(eventEntry).filter(Boolean);
+      } catch (e) { events = null; }
+      if (events && events.length) return { title: null, date: null, events };
+    }
     return {
-      title: (params.get('next') || '').trim() || null,
-      date: (params.get('date') || '').trim() || null
+      title: next || null,
+      date: (params.get('date') || '').trim() || null,
+      events: null
     };
   }
   const m = window.location.hash.match(/^#next=(.*)$/);
@@ -1000,7 +1017,7 @@ function parseCalendarFragment() {
   let s = m[1];
   try { s = decodeURIComponent(s); } catch (e) { /* keep raw */ }
   const title = s.replace(/\+/g, ' ').trim() || null;
-  return title ? { title, date: null } : null;
+  return title ? { title, date: null, events: null } : null;
 }
 
 function scheduleReminder(ms, text) {
@@ -1021,7 +1038,7 @@ function handlePhoneCommands(text) {
   const lower = text.toLowerCase();
   if (CALENDAR_RE.test(lower)) {
     const err = triggerMacro('calendar');
-    return err || 'Calendar lookup sent to MacroDroid. Your next event will appear when the result page opens.';
+    return err || 'Calendar lookup sent to MacroDroid. Your upcoming events will appear when the page opens.';
   }
   const openMatch = lower.match(OPEN_APP_RE);
   if (openMatch) {
@@ -1462,14 +1479,22 @@ function init() {
   }
   const calendarEvent = parseCalendarFragment();
   if (calendarEvent) {
-    const label = calendarEvent.date
-      ? calendarEvent.title + ' · ' + formatEventDate(calendarEvent.date)
-      : calendarEvent.title;
+    let label, spoken;
+    if (calendarEvent.events) {
+      label = calendarEvent.events.map(e => '• ' + e.title + (e.date ? ' · ' + formatEventDate(e.date) : '')).join('\n');
+      spoken = calendarEvent.events.map(e => e.title + ', ' + (e.date ? formatEventDate(e.date) : 'no date')).join('. ');
+    } else {
+      label = calendarEvent.date
+        ? calendarEvent.title + ' · ' + formatEventDate(calendarEvent.date)
+        : calendarEvent.title;
+      spoken = label;
+    }
+    const header = calendarEvent.events ? 'Calendar (' + calendarEvent.events.length + ' upcoming):\n' : 'Calendar: ';
     history.push({ role: 'user', text: '[Calendar lookup result] ' + label, sensitive: true });
     trimHistory();
     saveJSON(STORAGE.history, history);
-    addMsg('ev', 'Calendar: ' + label);
-    if (settings.voice) speak('Calendar: ' + label);
+    addMsg('ev', header + label);
+    if (settings.voice) speak('Calendar: ' + spoken);
   }
   if (window.location.hash.match(/^#next=/) || new URLSearchParams(window.location.search).has('next')
       || new URLSearchParams(window.location.search).has('date')) {

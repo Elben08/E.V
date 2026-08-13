@@ -41,19 +41,25 @@ Add actions in this order, then fix positions with **long-press → drag**:
    - **Output Array Variable**: create a **local** array variable `evEvents`
    - OK.
 3. **+ Add Action** → search "website" → **Open Website / HTTP GET**:
-   - URL: `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}`
-   - Keep **URL encode parameters** enabled (default) — this auto-encodes the title and start date in the query string, so values with spaces, `&`, `#`, `'`, `%` arrive safely in E.V.
+   - URL: `https://elben08.github.io/E.V/?next={lvjson=evEvents}`
+   - Keep **URL encode parameters** enabled (default). `{lvjson=...}` renders the whole array as JSON; MacroDroid URL-encodes it, and E.V parses it back into a list of `Title · date` rows.
    - OK.
 4. **Reorder** so the list reads exactly:
    ```
    If Clause: {lv=cmd} = calendar
    Get Calendar Events → evEvents
-   Open Website → https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}
+   Open Website → https://elben08.github.io/E.V/?next={lvjson=evEvents}
    End If
    ```
    (Drag Get Calendar Events and Open Website up if they landed below End If.)
 
-> E.V formats the `date` value itself (e.g. `Thu, 13 Aug · 09:00`), so the raw `Start` format from MacroDroid never shows. Some devices emit the offset without a sign/colon (`2026-08-14T08:00:00 0800`) — E.V normalizes that too (v22+).
+> E.V shows every event in the range as its own line, e.g.:
+> ```
+> Calendar (3 upcoming):
+> • Lunch with Tom · Thu, 13 Aug · 12:30
+> • Mama's birthday · Fri, 14 Aug · 08:00
+> ```
+> It formats each `Start` value itself, so the raw MacroDroid format never shows. Some devices emit the offset without a sign/colon (`2026-08-14T08:00:00 0800`) — E.V normalizes that too (v22+). If you'd rather only get the single next event, use `?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}` instead — E.V supports both.
 
 ## 5. Enable the macro + permission
 

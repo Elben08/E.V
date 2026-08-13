@@ -78,7 +78,7 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
    - **Trigger: Webhook (URL)** → Identifier `ev_cmd`. This gives you `https://trigger.macrodroid.com/<device-id>/ev_cmd`. If the trigger shows a PRO badge in the free version, stop here and let me know — we'll need a different approach.
    - **Global variable**: create a string variable named `cmd` (the webhook fills it from `?cmd=...`).
    - **Actions** (If / Else-If chain on `{v=cmd}`):
-     - If `{v=cmd}` = `calendar` → **Get Calendar Events** (Select Calendar: Any; Start Offset 0; Duration 7 days; output to an **Array** variable `evEvents`) → **Open Website** → `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}` (keep **URL encode parameters** ON — it encodes the title and date for you; E.V formats the date nicely, e.g. `Thu, 13 Aug · 09:00`)
+     - If `{v=cmd}` = `calendar` → **Get Calendar Events** (Select Calendar: Any; Start Offset 0; Duration 15 days; output to an **Array** variable `evEvents`) → **Open Website** → `https://elben08.github.io/E.V/?next={lvjson=evEvents}` (keep **URL encode parameters** ON — E.V lists every event in range as `Title · date` rows; the single-next-event form `?next={lv=evEvents[0][Title]}&date={lv=evEvents[0][Start]}` also works)
      - Else-If `{v=cmd}` = `flashlight.on` → **Set Flashlight: On**
      - Else-If `{v=cmd}` = `flashlight.off` → **Set Flashlight: Off**
      - (add `wifi.on` / `wifi.off` / `bluetooth.on` / `bluetooth.off` branches the same way if you want those)
@@ -88,7 +88,7 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
 
 > If "check my calendar" fires the macro but no browser tab opens, MacroDroid is missing the **"Display over other apps"** permission (required on Android 10+ for Open Website while MacroDroid is in the background): Android Settings → Apps → MacroDroid → Display over other apps → allow.
 
-When you say *"check my calendar"*, E.V calls the webhook with `?cmd=calendar`, MacroDroid grabs the next event and opens E.V with `?next=...`. E.V shows it in chat and keeps it on the private/Groq-only route. Works without root.
+When you say *"check my calendar"*, E.V calls the webhook with `?cmd=calendar`, MacroDroid grabs the upcoming events and opens E.V with the event list as JSON (`?next={lvjson=evEvents}`). E.V shows them all in chat and keeps them on the private/Groq-only route. Works without root.
 
 App-launching and reminders work without MacroDroid.
 
