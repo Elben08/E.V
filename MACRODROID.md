@@ -41,20 +41,24 @@ Add actions in this order, then fix positions with **long-press → drag**:
    - **Output Array Variable**: create a **local** array variable `evEvents`
    - OK.
 3. **+ Add Action** → search "website" → **Open Website / HTTP GET**:
-   - URL: `https://elben08.github.io/E.V/#next={lv=evEvents[0][Title]}`
+   - URL: `https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}`
+   - Keep **URL encode parameters** enabled (default) — this auto-encodes the event title in the query string, so titles with spaces, `&`, `#`, `'`, `%` arrive safely in E.V.
    - OK.
 4. **Reorder** so the list reads exactly:
    ```
    If Clause: {lv=cmd} = calendar
    Get Calendar Events → evEvents
-   Open Website → https://elben08.github.io/E.V/#next={lv=evEvents[0][Title]}
+   Open Website → https://elben08.github.io/E.V/?next={lv=evEvents[0][Title]}
    End If
    ```
    (Drag Get Calendar Events and Open Website up if they landed below End If.)
 
-## 5. Enable the macro
+## 5. Enable the macro + permission
 
-Top toggle → **ON**. Grant **Calendar** permission when prompted.
+1. Top toggle → **ON**. Grant **Calendar** permission when prompted.
+2. **Grant MacroDroid the "Display over other apps" permission** (a.k.a. "Appear on top"): Android Settings → Apps → MacroDroid → Display over other apps → allow.
+
+   Without it, the **Open Website** action fails to launch the browser when MacroDroid is in the background (which is always the case when triggered by a webhook) — the macro logs "Open Website" as executed but no tab/window ever opens. On Android 10+ this is a hard requirement.
 
 ## 6. Test in the browser first
 
@@ -75,7 +79,7 @@ Macro editor → **⋮** menu → **System Log**, then re-run the browser test:
 
 ### Raw magic text in E.V?
 
-If E.V shows something like `Calendar:{lv=evEvents[0].Title}` instead of an event, the array key path didn't resolve. Temporarily change the Open Website URL to `#next={lv=evEvents}` to dump the whole array (E.V prints it as `[key]: value` lines), confirm it's populated, then restore the correct path.
+If E.V shows something like `Calendar:{lv=evEvents[0].Title}` instead of an event, the array key path didn't resolve. Temporarily change the Open Website URL to `?next={lv=evEvents}` to dump the whole array (E.V prints it as `[key]: value` lines), confirm it's populated, then restore the correct path.
 
 ## 7. Then in E.V
 

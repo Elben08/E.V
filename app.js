@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v20';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -972,6 +972,10 @@ function triggerMacro(action) {
 }
 
 function parseCalendarFragment() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('next')) {
+    return params.get('next').trim() || null;
+  }
   const m = window.location.hash.match(/^#next=(.*)$/);
   if (!m) return null;
   let s = m[1];
@@ -1444,8 +1448,8 @@ function init() {
     addMsg('ev', 'Calendar: ' + calendarEvent);
     if (settings.voice) speak('Calendar: ' + calendarEvent);
   }
-  if (window.location.hash.match(/^#next=/)) {
-    try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch (e) { /* ignore */ }
+  if (window.location.hash.match(/^#next=/) || new URLSearchParams(window.location.search).has('next')) {
+    try { history.replaceState(null, '', window.location.pathname); } catch (e) { /* ignore */ }
   }
 }
 
