@@ -73,7 +73,7 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
 > E.V talks to MacroDroid through the **Webhook (URL)** trigger (a plain HTTP call), not intents — MacroDroid's *Intent Received* trigger is a broadcast receiver and can't be reached from a web page. Requires Google Play Services on the phone.
 
 1. Install [MacroDroid](https://play.google.com/store/apps/details?id=com.arlosoft.macrodroid) (free).
-2. In E.V → **Settings (gear)** → paste your webhook base URL: `https://trigger.macrodroid.com/<device-id>/` (the `<device-id>` part comes from any Webhook trigger URL below).
+2. In E.V → **Settings (gear)** → paste your webhook URL (either form works — the base `https://trigger.macrodroid.com/<device-id>/` or the full `https://trigger.macrodroid.com/<device-id>/ev_cmd`; E.V appends `?cmd=...` itself).
 3. Create **one** macro named `E.V Commands`:
    - **Trigger: Webhook (URL)** → Identifier `ev_cmd`. This gives you `https://trigger.macrodroid.com/<device-id>/ev_cmd`. If the trigger shows a PRO badge in the free version, stop here and let me know — we'll need a different approach.
    - **Global variable**: create a string variable named `cmd` (the webhook fills it from `?cmd=...`).

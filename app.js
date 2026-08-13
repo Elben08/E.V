@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -961,11 +961,12 @@ function launchApp(app) {
 }
 
 function triggerMacro(action) {
-  const base = (settings.macroWebhook || '').trim().replace(/\/+$/, '');
+  let base = (settings.macroWebhook || '').trim().replace(/\/+$/, '');
   if (!base) {
     return 'MacroDroid webhook URL is not set. Open Settings (gear icon) and paste it.';
   }
-  const url = base + '/ev_cmd?cmd=' + encodeURIComponent(action);
+  if (!/\/ev_cmd$/i.test(base)) base += '/ev_cmd';
+  const url = base + '?cmd=' + encodeURIComponent(action);
   try { fetch(url, { method: 'GET', mode: 'no-cors', cache: 'no-store' }); } catch (e) { /* ignore */ }
   return null;
 }
