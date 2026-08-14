@@ -104,7 +104,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1092,11 +1092,30 @@ let listening = false;
 let handsFreeActive = false;
 let handsFreePaused = false;
 let handsfreeRestartTimer = 0;
+let handsFreeBuffer = '';
+let handsFreeLastSpeech = 0;
+let handsfreeSendTimer = 0;
+const HANDS_FREE_DELAY = 3000;
 const WAKE_RE = /^\s*(?:(?:hey there|hey|okay|ok|listen|yo)\s+)?e[\s.]*v\b/i;
 const EXIT_RE = /\b(?:stop listening|exit hands[- ]?free|hands[- ]?free off|goodbye|good bye)\b/i;
 
 function stripWakePhrase(text) {
   return text.replace(WAKE_RE, ' ').trim();
+}
+
+function scheduleHandsFreeSend() {
+  if (handsfreeSendTimer) return;
+  handsfreeSendTimer = setTimeout(() => {
+    handsfreeSendTimer = 0;
+    const text = handsFreeBuffer.trim();
+    handsFreeBuffer = '';
+    handsFreeLastSpeech = 0;
+    if (!text) return;
+    if (EXIT_RE.test(text)) { endHandsFreeSession(); return; }
+    const stripped = stripWakePhrase(text);
+    if (!stripped || stripped === text) return;
+    handleHandsFreeResult(text);
+  }, Math.max(0, HANDS_FREE_DELAY - (Date.now() - handsFreeLastSpeech)));
 }
 
 function startRecognition(mode) {
@@ -1109,14 +1128,25 @@ function startRecognition(mode) {
   recognition.interimResults = true;
   recognition.continuous = false;
   let finalText = '';
+  let sawFinal = false;
   recognition.onstart = () => { listening = true; setReactor('listening'); setStatus('listening', 'busy'); setVoiceOverlay(true); };
   recognition.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
         const seg = e.results[i][0].transcript;
         finalText += seg;
-        updateVoiceTranscript(finalText);
-        if (mode === 'hands-free') handleHandsFreeResult(seg);
+        if (mode === 'hands-free') {
+          if (EXIT_RE.test(seg)) { endHandsFreeSession(); return; }
+          sawFinal = true;
+          clearTimeout(handsfreeSendTimer);
+          handsfreeSendTimer = 0;
+          handsFreeLastSpeech = Date.now();
+          handsFreeBuffer = (handsFreeBuffer + ' ' + seg).trim();
+          updateVoiceTranscript(handsFreeBuffer);
+          scheduleHandsFreeSend();
+        } else {
+          updateVoiceTranscript(finalText);
+        }
       } else {
         el['text-input'].value = e.results[i][0].transcript;
         updateVoiceTranscript(e.results[i][0].transcript);
@@ -1151,6 +1181,15 @@ function startRecognition(mode) {
       return;
     }
     if (handsFreePaused) { setVoiceOverlay(true, true); return; }
+    if (!sawFinal && el['text-input'].value.trim() && !handsFreeBuffer.includes(el['text-input'].value.trim())) {
+      const interim = el['text-input'].value.trim();
+      clearTimeout(handsfreeSendTimer);
+      handsfreeSendTimer = 0;
+      handsFreeLastSpeech = Date.now();
+      handsFreeBuffer = (handsFreeBuffer + ' ' + interim).trim();
+      updateVoiceTranscript(handsFreeBuffer);
+    }
+    if (handsFreeBuffer.trim()) scheduleHandsFreeSend();
     clearTimeout(handsfreeRestartTimer);
     handsfreeRestartTimer = setTimeout(() => {
       if (handsFreeActive && !handsFreePaused && !busy) startRecognition('hands-free');
@@ -1160,6 +1199,10 @@ function startRecognition(mode) {
 }
 
 function handleHandsFreeResult(seg) {
+  clearTimeout(handsfreeSendTimer);
+  handsfreeSendTimer = 0;
+  handsFreeBuffer = '';
+  handsFreeLastSpeech = 0;
   const value = (seg || '').trim();
   if (!value) return;
   if (EXIT_RE.test(value)) { endHandsFreeSession(); return; }
@@ -1188,6 +1231,8 @@ function resumeHandsFree() {
 function startHandsFreeSession() {
   handsFreeActive = true;
   handsFreePaused = false;
+  handsFreeBuffer = '';
+  handsFreeLastSpeech = 0;
   toast('Hands-free on. Say \u201cHey E.V\u201d to talk.');
   startRecognition('hands-free');
 }
@@ -1195,6 +1240,10 @@ function startHandsFreeSession() {
 function endHandsFreeSession() {
   handsFreeActive = false;
   handsFreePaused = false;
+  clearTimeout(handsfreeSendTimer);
+  handsfreeSendTimer = 0;
+  handsFreeBuffer = '';
+  handsFreeLastSpeech = 0;
   if (recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
   recognition = null;
   listening = false;
