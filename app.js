@@ -100,10 +100,11 @@ const DEFAULT_SETTINGS = {
   provider: 'auto',
   privacy: 'auto',
   voice: true,
+  handsFree: false,
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -565,7 +566,7 @@ function isModelUnavailable(message) {
 
 const el = {};
 const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'attach-tray', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
-  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice', 'set-macro-webhook',
+  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice', 'set-hands-free', 'set-macro-webhook',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new'];
@@ -1018,6 +1019,7 @@ function failInBubble(bubble, message, retry) {
   });
   bubble.appendChild(btn);
   scrollChat();
+  resumeHandsFree();
 }
 
 function trimHistory() {
@@ -1038,16 +1040,16 @@ function pickVoice() {
 }
 
 function speak(text) {
-  if (!settings.voice || !('speechSynthesis' in window)) return;
+  if (!settings.voice || !('speechSynthesis' in window)) { resumeHandsFree(); return; }
   const clean = text.replace(/[#*_`]/g, '').replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
-  if (!clean) return;
+  if (!clean) { resumeHandsFree(); return; }
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(clean);
   const v = pickVoice();
   if (v) u.voice = v;
   u.rate = 1.02;
   u.pitch = 0.95;
-  const done = () => { setReactor(''); setStatus('online', ''); };
+  const done = () => { setReactor(''); setStatus('online', ''); resumeHandsFree(); };
   u.onend = done;
   u.onerror = done;
   setReactor('speaking');
@@ -1075,12 +1077,21 @@ function speakWhenReady(text, maxWaitMs) {
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let listening = false;
+let handsFreeActive = false;
+let handsFreePaused = false;
+let handsfreeRestartTimer = 0;
+const WAKE_RE = /^\s*(?:(?:hey there|hey|okay|ok|listen|yo)\s+)?e[\s.]*v\b/i;
+const EXIT_RE = /\b(?:stop listening|exit hands[- ]?free|hands[- ]?free off|goodbye|good bye)\b/i;
 
-function toggleListening() {
-  if (busy) return;
+function stripWakePhrase(text) {
+  return text.replace(WAKE_RE, ' ').trim();
+}
+
+function startRecognition(mode) {
   if (!SR) { toast('Voice input is not supported in this browser.'); return; }
-  if (listening) { recognition && recognition.stop(); return; }
+  if (listening) return;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
+  clearTimeout(handsfreeRestartTimer);
   recognition = new SR();
   recognition.lang = 'en-US';
   recognition.interimResults = true;
@@ -1089,21 +1100,98 @@ function toggleListening() {
   recognition.onstart = () => { listening = true; setReactor('listening'); setStatus('listening', 'busy'); };
   recognition.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
-      else { el['text-input'].value = e.results[i][0].transcript; updateSendDisabled(); }
+      if (e.results[i].isFinal) {
+        const seg = e.results[i][0].transcript;
+        finalText += seg;
+        if (mode === 'hands-free') handleHandsFreeResult(seg);
+      } else {
+        el['text-input'].value = e.results[i][0].transcript;
+        updateSendDisabled();
+      }
     }
   };
   recognition.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Microphone permission denied.');
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      toast('Microphone permission denied.');
+      if (mode === 'hands-free') endHandsFreeSession();
+      return;
+    }
+    if (mode === 'hands-free') {
+      clearTimeout(handsfreeRestartTimer);
+      handsfreeRestartTimer = setTimeout(() => {
+        if (handsFreeActive && !handsFreePaused && !busy) startRecognition('hands-free');
+      }, 800);
+    }
   };
   recognition.onend = () => {
     listening = false;
-    setReactor('');
-    setStatus('online', '');
-    const value = (finalText || el['text-input'].value).trim();
-    if (value) send(value);
+    if (mode !== 'hands-free') {
+      setReactor('');
+      setStatus('online', '');
+      const value = (finalText || el['text-input'].value).trim();
+      if (value) send(value);
+      return;
+    }
+    if (handsFreePaused) return;
+    clearTimeout(handsfreeRestartTimer);
+    handsfreeRestartTimer = setTimeout(() => {
+      if (handsFreeActive && !handsFreePaused && !busy) startRecognition('hands-free');
+    }, 400);
   };
   recognition.start();
+}
+
+function handleHandsFreeResult(seg) {
+  const value = (seg || '').trim();
+  if (!value) return;
+  if (EXIT_RE.test(value)) { endHandsFreeSession(); return; }
+  const stripped = stripWakePhrase(value);
+  if (!stripped || stripped === value) return;
+  handsFreePaused = true;
+  if (recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
+  el['text-input'].value = '';
+  updateSendDisabled();
+  send(stripped);
+}
+
+function resumeHandsFree() {
+  if (!handsFreeActive || !handsFreePaused || busy) return;
+  if (listening) {
+    clearTimeout(handsfreeRestartTimer);
+    handsfreeRestartTimer = setTimeout(resumeHandsFree, 300);
+    return;
+  }
+  handsFreePaused = false;
+  startRecognition('hands-free');
+}
+
+function startHandsFreeSession() {
+  handsFreeActive = true;
+  handsFreePaused = false;
+  toast('Hands-free on. Say \u201cHey E.V\u201d to talk.');
+  startRecognition('hands-free');
+}
+
+function endHandsFreeSession() {
+  handsFreeActive = false;
+  handsFreePaused = false;
+  if (recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
+  recognition = null;
+  listening = false;
+  clearTimeout(handsfreeRestartTimer);
+  setReactor('');
+  setStatus('online', '');
+  if (!busy && settings.voice && 'speechSynthesis' in window) speak('Hands-free off.');
+  else toast('Hands-free off.');
+}
+
+function toggleListening() {
+  if (!SR) { toast('Voice input is not supported in this browser.'); return; }
+  if (handsFreeActive) { endHandsFreeSession(); return; }
+  if (busy) return;
+  if (settings.handsFree) { startHandsFreeSession(); return; }
+  if (listening) { recognition && recognition.stop(); return; }
+  startRecognition('ptt');
 }
 
 function launchApp(app) {
@@ -1453,6 +1541,7 @@ function openSettings() {
   el['set-provider'].value = settings.provider;
   el['set-privacy'].value = settings.privacy;
   el['set-voice'].checked = settings.voice;
+  el['set-hands-free'].checked = settings.handsFree;
   el['set-macro-webhook'].value = settings.macroWebhook;
   el['gemini-model-label'].textContent = modelLabel('gemini');
   el['groq-model-label'].textContent = modelLabel('groq');
@@ -1465,11 +1554,13 @@ function saveSettingsForm() {
   settings.provider = el['set-provider'].value;
   settings.privacy = el['set-privacy'].value;
   settings.voice = el['set-voice'].checked;
+  settings.handsFree = el['set-hands-free'].checked;
   settings.macroWebhook = el['set-macro-webhook'].value.trim();
   saveJSON(STORAGE.settings, settings);
   hide(el['modal-settings']);
   toast('Settings saved.');
   setReactor('');
+  if (!settings.handsFree && handsFreeActive) endHandsFreeSession();
 }
 
 async function testConnections() {
