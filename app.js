@@ -103,7 +103,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v27';
+const APP_VERSION = 'v28';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -129,6 +129,7 @@ function loadSettings() {
 let settings = loadSettings();
 let history = loadJSON(STORAGE.history, []);
 let facts = loadJSON(STORAGE.facts, []);
+if (facts.length > 60) facts = facts.slice(0, 60);
 let privateMode = loadJSON(STORAGE.privateMode, false);
 let conversationSummary = loadJSON(STORAGE.conversationSummary, '');
 let summarizing = false;
@@ -227,9 +228,12 @@ async function fitGroqBudget(attachments, text) {
 
 const GROQ_TEXT_BUDGET = 4400;
 const GROQ_TIGHT_TEXT_BUDGET = 3600;
+const FACTS_EST_BUDGET = 800;
 const SUMMARY_TRIM_EST = 3000;
 const SUMMARY_KEEP = 8;
 const SUMMARY_MIN_GAP = 8;
+const SUMMARY_CHUNK_EST = 2400;
+const SUMMARY_MAX_CHARS = 1600;
 const SUMMARY_PROMPT = 'You are E.V\u2019s conversation-compactor. Combine the conversation below into one tight, continuous summary that lets a later AI recover full context: what the user asked, key facts, decisions, and the user\u2019s current goals/state. Keep it under ~150 words. Preserve exact names and dates. Do not invent new information.\n\n';
 const TOO_LARGE_MSG = 'The request is too large for Groq\u2019s free limit. Try a shorter conversation, or ask Gemini instead.';
 const FAILED_MSG_PLACEHOLDER = '[previous reply failed \u2014 no answer]';
@@ -309,19 +313,30 @@ async function groqSendFitted(userText, attachments, token, maxTokens) {
 }
 
 async function summarizeOnce(provider, content) {
-  const acc = [];
-  const collect = (chunk) => { if (typeof chunk === 'string') acc.push(chunk); };
-  if (provider === 'groq') {
-    await sendToGroq([
-      { role: 'system', content: SUMMARY_PROMPT + 'Conversation so far:\n' + content },
-      { role: 'user', content: 'Produce the summary now.' }
-    ], collect, undefined, 800);
-  } else {
-    await sendToGemini([
-      { role: 'user', parts: [{ text: SUMMARY_PROMPT + 'Conversation so far:\n' + content + '\n\nProduce the summary now.' }] }
-    ], collect, false);
+  const run = async (p) => {
+    const acc = [];
+    const collect = (chunk) => { if (typeof chunk === 'string') acc.push(chunk); };
+    if (p === 'groq') {
+      if (!settings.groqKey) throw new Error('no Groq key');
+      await sendToGroq([
+        { role: 'system', content: SUMMARY_PROMPT + 'Conversation so far:\n' + content },
+        { role: 'user', content: 'Produce the summary now.' }
+      ], collect, undefined, 800);
+    } else {
+      if (!settings.geminiKey) throw new Error('no Gemini key');
+      await sendToGemini([
+        { role: 'user', parts: [{ text: SUMMARY_PROMPT + 'Conversation so far:\n' + content + '\n\nProduce the summary now.' }] }
+      ], collect, false, true);
+    }
+    return acc.join('').trim();
+  };
+  const other = provider === 'groq' ? 'gemini' : 'groq';
+  let text;
+  try {
+    text = await run(provider);
+  } catch (e) {
+    text = await run(other);
   }
-  const text = acc.join('').trim();
   if (!text) throw new Error('Empty summary');
   return text;
 }
@@ -339,10 +354,29 @@ async function maybeSummarizeHistory(providerSucceeded) {
   summarizing = true;
   const targetLen = history.length;
   try {
-    const lines = safe.map((h) => (h.role === 'user' ? 'User: ' : 'E.V: ') + h.text).join('\n');
-    const content = (conversationSummary ? 'Previous summary:\n' + conversationSummary + '\n\n' : '') + lines;
-    const text = await summarizeOnce(providerSucceeded === 'groq' ? 'groq' : 'gemini', content);
-    conversationSummary = text;
+    const lines = safe.map((h) => (h.role === 'user' ? 'User: ' : 'E.V: ') + h.text);
+    const chunks = [];
+    let cur = [];
+    let curEst = 0;
+    for (const line of lines) {
+      const t = estimateTokens(line, true);
+      if (cur.length && curEst + t > SUMMARY_CHUNK_EST) {
+        chunks.push(cur.join('\n'));
+        cur = [];
+        curEst = 0;
+      }
+      cur.push(line);
+      curEst += t;
+    }
+    if (cur.length) chunks.push(cur.join('\n'));
+    let rolling = conversationSummary;
+    const provider = providerSucceeded === 'groq' ? 'groq' : 'gemini';
+    for (const chunk of chunks) {
+      const content = (rolling ? 'Previous summary:\n' + rolling + '\n\n' : '') + chunk;
+      rolling = await summarizeOnce(provider, content);
+      if (rolling.length > SUMMARY_MAX_CHARS) rolling = rolling.slice(0, SUMMARY_MAX_CHARS);
+    }
+    conversationSummary = rolling;
     saveJSON(STORAGE.conversationSummary, conversationSummary);
     if (history.length === targetLen) {
       history = history.slice(-SUMMARY_KEEP);
@@ -568,7 +602,16 @@ function chooseProvider(analysis) {
 }
 
 function visibleFacts(provider) {
-  return facts.filter((f) => provider === 'groq' || !f.sensitive);
+  const out = [];
+  let est = 0;
+  for (const f of facts) {
+    if (provider !== 'groq' && f.sensitive) continue;
+    const t = estimateTokens(f.text);
+    if (est + t > FACTS_EST_BUDGET) break;
+    out.push(f);
+    est += t;
+  }
+  return out;
 }
 
 function buildSystem(provider) {
@@ -649,7 +692,7 @@ async function readSSE(response, onData, onError) {
   if (buffer.trim()) handleLine(buffer);
 }
 
-async function sendToGemini(messages, onToken, liveInfo) {
+async function sendToGemini(messages, onToken, liveInfo, noRecover) {
   const key = encodeURIComponent(settings.geminiKey);
   const headers = { 'Content-Type': 'application/json' };
   const body = {
@@ -742,6 +785,11 @@ async function sendToGemini(messages, onToken, liveInfo) {
     return false;
   };
 
+  const recover = async (model) => {
+    if (noRecover) return false;
+    return recoverFromRateLimit(model);
+  };
+
   const start = clampModelIndex(GEMINI_MODELS, activeModels.gemini);
   let lastErr = null;
   for (let i = start; i < GEMINI_MODELS.length; i++) {
@@ -750,7 +798,7 @@ async function sendToGemini(messages, onToken, liveInfo) {
       await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
     } catch (e) {
       if (e.rateLimited) {
-        if (await recoverFromRateLimit(model)) { setActiveModel('gemini', i); return; }
+        if (await recover(model)) { setActiveModel('gemini', i); return; }
         throw e;
       }
       lastErr = e;
@@ -762,7 +810,7 @@ async function sendToGemini(messages, onToken, liveInfo) {
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
-              if (await recoverFromRateLimit(model)) { setActiveModel('gemini', i); return; }
+              if (await recover(model)) { setActiveModel('gemini', i); return; }
               throw e2;
             }
             lastErr = e2;
@@ -1217,6 +1265,7 @@ function extractFacts(text) {
     if (facts.some((f) => f.text.toLowerCase() === factText.toLowerCase())) continue;
     const a = analyzeSensitivity(factText);
     facts.unshift({ text: factText, sensitive: a.sensitive });
+    if (facts.length > 60) facts.length = 60;
     added = true;
   }
   if (added) {
@@ -1281,10 +1330,10 @@ async function performReply(bubble, ctx) {
       try {
         await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
       } catch (err) {
-        if (err.rateLimited) throw new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.' + RATE_HINT);
-        if (isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
-          throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this conversation \u2014 try a shorter message or a new conversation.');
+        if (isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
+          throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         }
+        if (err.rateLimited) throw new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.' + RATE_HINT);
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
       }
     }
@@ -1322,7 +1371,9 @@ async function performReply(bubble, ctx) {
         await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
       }
     } catch (err) {
-      failThis(err.rateLimited ? friendlyRateLimit('Groq', err) + RATE_HINT : err.message);
+      failThis(isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG
+        ? 'Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.'
+        : (err.rateLimited ? friendlyRateLimit('Groq', err) + RATE_HINT : err.message));
       return;
     }
     succeededProvider = 'groq';
