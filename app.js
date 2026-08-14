@@ -104,7 +104,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -569,7 +569,8 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice', 'set-hands-free', 'set-macro-webhook',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
-  'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new'];
+  'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new',
+  'voice-overlay', 'vo-transcript', 'vo-status'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
 const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday)\b/i;
@@ -915,6 +916,17 @@ function setReactor(state) {
   el.reactor.setAttribute('aria-pressed', state === 'listening' ? 'true' : 'false');
 }
 
+function setVoiceOverlay(on, working) {
+  const ov = el['voice-overlay'];
+  ov.classList.toggle('hidden', !on);
+  ov.classList.toggle('working', !!working);
+  el['vo-status'].textContent = working ? 'Working\u2026' : 'Listening\u2026';
+}
+
+function updateVoiceTranscript(text) {
+  el['vo-transcript'].textContent = text || '';
+}
+
 let toastTimer;
 function toast(msg) {
   el.toast.textContent = msg;
@@ -1097,15 +1109,17 @@ function startRecognition(mode) {
   recognition.interimResults = true;
   recognition.continuous = false;
   let finalText = '';
-  recognition.onstart = () => { listening = true; setReactor('listening'); setStatus('listening', 'busy'); };
+  recognition.onstart = () => { listening = true; setReactor('listening'); setStatus('listening', 'busy'); setVoiceOverlay(true); };
   recognition.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
         const seg = e.results[i][0].transcript;
         finalText += seg;
+        updateVoiceTranscript(finalText);
         if (mode === 'hands-free') handleHandsFreeResult(seg);
       } else {
         el['text-input'].value = e.results[i][0].transcript;
+        updateVoiceTranscript(e.results[i][0].transcript);
         updateSendDisabled();
       }
     }
@@ -1113,6 +1127,7 @@ function startRecognition(mode) {
   recognition.onerror = (e) => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       toast('Microphone permission denied.');
+      setVoiceOverlay(false);
       if (mode === 'hands-free') endHandsFreeSession();
       return;
     }
@@ -1121,6 +1136,8 @@ function startRecognition(mode) {
       handsfreeRestartTimer = setTimeout(() => {
         if (handsFreeActive && !handsFreePaused && !busy) startRecognition('hands-free');
       }, 800);
+    } else {
+      setVoiceOverlay(false);
     }
   };
   recognition.onend = () => {
@@ -1128,11 +1145,12 @@ function startRecognition(mode) {
     if (mode !== 'hands-free') {
       setReactor('');
       setStatus('online', '');
+      setVoiceOverlay(false);
       const value = (finalText || el['text-input'].value).trim();
       if (value) send(value);
       return;
     }
-    if (handsFreePaused) return;
+    if (handsFreePaused) { setVoiceOverlay(true, true); return; }
     clearTimeout(handsfreeRestartTimer);
     handsfreeRestartTimer = setTimeout(() => {
       if (handsFreeActive && !handsFreePaused && !busy) startRecognition('hands-free');
@@ -1151,6 +1169,8 @@ function handleHandsFreeResult(seg) {
   if (recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
   el['text-input'].value = '';
   updateSendDisabled();
+  updateVoiceTranscript(stripped);
+  setVoiceOverlay(true, true);
   send(stripped);
 }
 
@@ -1181,6 +1201,7 @@ function endHandsFreeSession() {
   clearTimeout(handsfreeRestartTimer);
   setReactor('');
   setStatus('online', '');
+  setVoiceOverlay(false);
   if (!busy && settings.voice && 'speechSynthesis' in window) speak('Hands-free off.');
   else toast('Hands-free off.');
 }
@@ -1719,6 +1740,10 @@ function init() {
   if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
 
   el.reactor.addEventListener('click', toggleListening);
+  el['voice-overlay'].addEventListener('click', () => {
+    if (!listening && !handsFreeActive) return;
+    toggleListening();
+  });
   el['btn-send'].addEventListener('click', () => {
     const v = el['text-input'].value.trim();
     if (!v && !pendingAttachments.length) return;

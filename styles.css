@@ -6,6 +6,8 @@
   --cyan: #39c6ff;
   --cyan-dim: #1d7fb0;
   --cyan-glow: rgba(57, 198, 255, 0.35);
+  --pink: #ff6fd8;
+  --pink-glow: rgba(255, 111, 216, 0.3);
   --text: #d7ecf7;
   --muted: #7fa4ba;
   --danger: #ff5d5d;
@@ -345,6 +347,135 @@ body {
 .reactor.off .reactor-mic { color: #999; }
 .reactor.off .reactor-ring { border-color: rgba(255, 255, 255, 0.08); animation: none; }
 
+/* ---------- Voice overlay ---------- */
+.voice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(900px 600px at 50% 28%, #0e1a33 0%, var(--bg) 70%);
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.3s, visibility 0.3s;
+}
+.voice-overlay.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.vo-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 16px;
+  background: #000;
+  border-bottom: 1px solid rgba(57, 198, 255, 0.25);
+}
+.vo-brand {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: var(--cyan);
+  text-shadow: 0 0 12px var(--cyan-glow);
+}
+
+.vo-center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  padding-bottom: 10vh;
+}
+
+.vo-orb {
+  position: relative;
+  width: 220px;
+  height: 220px;
+}
+
+.vo-orbit {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--cyan);
+  box-shadow: 0 0 40px var(--cyan-glow), inset 0 0 30px rgba(57, 198, 255, 0.18);
+}
+.vo-orbit-1 { animation: spin 6s linear infinite; border-right-color: rgba(57, 198, 255, 0.15); border-left-color: rgba(57, 198, 255, 0.15); }
+.vo-orbit-2 {
+  inset: 9px;
+  border-width: 1px;
+  border-style: dashed;
+  border-color: rgba(57, 198, 255, 0.4);
+  animation: spin 4s linear infinite reverse;
+  box-shadow: none;
+}
+
+.vo-wave {
+  position: absolute;
+  inset: 22px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: radial-gradient(circle at 50% 50%, #0c1526 0%, rgba(12, 21, 38, 0) 75%);
+}
+.vo-wave i {
+  width: 4px;
+  height: 26%;
+  border-radius: 3px;
+  animation: voWave 1s ease-in-out infinite;
+}
+.vo-wave i:nth-child(odd) { background: linear-gradient(to top, var(--cyan-dim), var(--cyan)); box-shadow: 0 0 6px var(--cyan-glow); }
+.vo-wave i:nth-child(even) { background: linear-gradient(to top, #c94aa8, var(--pink)); box-shadow: 0 0 6px var(--pink-glow); }
+.vo-wave i:nth-child(1)  { animation-delay: -0.05s; }
+.vo-wave i:nth-child(2)  { animation-delay: -0.20s; }
+.vo-wave i:nth-child(3)  { animation-delay: -0.35s; }
+.vo-wave i:nth-child(4)  { animation-delay: -0.50s; }
+.vo-wave i:nth-child(5)  { animation-delay: -0.65s; }
+.vo-wave i:nth-child(6)  { animation-delay: -0.80s; }
+.vo-wave i:nth-child(7)  { animation-delay: -0.95s; }
+.vo-wave i:nth-child(8)  { animation-delay: -0.10s; }
+.vo-wave i:nth-child(9)  { animation-delay: -0.25s; }
+.vo-wave i:nth-child(10) { animation-delay: -0.40s; }
+.vo-wave i:nth-child(11) { animation-delay: -0.55s; }
+.vo-wave i:nth-child(12) { animation-delay: -0.70s; }
+.vo-wave i:nth-child(13) { animation-delay: -0.85s; }
+
+.vo-transcript {
+  min-height: 20px;
+  max-width: 320px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 300;
+  color: var(--cyan);
+  text-shadow: 0 0 8px var(--cyan-glow);
+  opacity: 0.9;
+}
+
+.vo-status {
+  font-size: 28px;
+  font-weight: 200;
+  letter-spacing: 3px;
+  color: #fff;
+  text-shadow: 0 0 18px rgba(255, 255, 255, 0.25);
+  animation: blink 2.4s ease-in-out infinite;
+}
+
+.vo-mic {
+  font-size: 24px;
+  line-height: 1;
+  color: var(--cyan);
+  opacity: 0.9;
+  text-shadow: 0 0 12px var(--cyan-glow);
+}
+
+.voice-overlay.working .vo-orbit-1 { border-color: var(--pink); box-shadow: 0 0 40px var(--pink-glow), inset 0 0 30px rgba(255, 111, 216, 0.15); }
+.voice-overlay.working .vo-status { animation: none; color: #ffd9f3; }
+.voice-overlay.working .vo-mic { color: var(--pink); text-shadow: 0 0 12px var(--pink-glow); }
+
 /* ---------- Modals ---------- */
 .modal {
   position: fixed;
@@ -528,6 +659,10 @@ body {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(0.8); }
 }
+@keyframes voWave {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
 
 /* ---------- Scrollbar ---------- */
 .chat::-webkit-scrollbar { width: 8px; }
@@ -550,4 +685,9 @@ body {
   .inputbar { padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
   .input-row { gap: 6px; }
   #text-input { padding: 11px 12px; }
+  .vo-orb { width: 165px; height: 165px; }
+  .vo-wave { inset: 18px; }
+  .vo-wave i { width: 3px; gap: 3px; }
+  .vo-status { font-size: 21px; }
+  .vo-transcript { font-size: 12px; max-width: 260px; }
 }

@@ -114,7 +114,7 @@ Everything runs on-device and instant. Groq does not train on your data; Gemini 
 
 ## Known limits
 
-- **Tap-to-talk**, or **Hands-free mode** (Settings → on): tap the reactor to start a voice session, then just say "Hey E.V …". Browsers stop listening after ~1 minute, so E.V silently restarts the mic while the session is live; say "stop listening" or "goodbye" (or tap the reactor) to end it. Commands need a wake phrase; the mic is paused while E.V speaks so it never hears its own reply. Needs Android Chrome, screen on, and microphone permission.
+- **Tap-to-talk**, or **Hands-free mode** (Settings → on): tap the reactor to start a voice session, then just say "Hey E.V …". While listening, a fullscreen glowing-orb overlay shows your live transcript; tap it to stop (or say "stop listening" / "goodbye" to end a hands-free session). Browsers stop listening after ~1 minute, so E.V silently restarts the mic while the session is live. Needs Android Chrome, screen on, and microphone permission.
 - **Attachments** — images up to 7 MB each, PDFs up to 20 MB, max 5 files / 20 MB total. Files are read in-browser only and never stored; history keeps just a `[Attached file]` note. PDFs don't work on the Groq route, and attachments are kept out of private-mode history.
 - Deep control *inside* other apps (typing/swiping) needs a native Android app — a future upgrade.
 - API keys are stored on your device; treat this as a personal app, don't publish it publicly with your keys.
