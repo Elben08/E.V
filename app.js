@@ -104,7 +104,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v32';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1460,6 +1460,7 @@ async function performReply(bubble, ctx) {
       role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, errorMsg: msg,
       provider: usedLabel, retryUserText: ctx.userText, retryProvider: ctx.provider, retryReason: ctx.reason
     });
+    if (handsFreeActive) updateVoiceTranscript(msg);
     failInBubble(bubble, msg, () => performReply(bubble, ctx));
   };
 
@@ -1469,6 +1470,7 @@ async function performReply(bubble, ctx) {
     if (typeof chunk !== 'string') return;
     reply += chunk;
     bodyEl.textContent = reply;
+    if (handsFreeActive) updateVoiceTranscript(reply);
     scrollChat();
   };
   const groqStart = () => (attachments.length ? firstVisionIndex('groq') : undefined);
