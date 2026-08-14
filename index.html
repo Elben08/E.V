@@ -74,11 +74,15 @@
       <label>Groq API key
         <input id="set-groq" type="password" placeholder="gsk_... (free at console.groq.com)" autocomplete="off">
       </label>
+      <label>OpenRouter API key
+        <input id="set-openrouter" type="password" placeholder="sk-or-v1-... (free at openrouter.ai)" autocomplete="off">
+      </label>
       <label>Default provider
         <select id="set-provider">
-          <option value="auto">Auto (Gemini, fallback Groq)</option>
+          <option value="auto">Auto (Gemini, fallback Groq / OpenRouter)</option>
           <option value="gemini">Gemini only</option>
           <option value="groq">Groq only</option>
+          <option value="openrouter">OpenRouter only</option>
         </select>
       </label>
       <label>Privacy routing
@@ -88,6 +92,7 @@
           <option value="manual">Manual override only</option>
         </select>
       </label>
+      <p class="muted">OpenRouter free models may log prompts for training. Sensitive content always routes to Groq when a Groq key is set.</p>
       <label>MacroDroid webhook URL
         <input id="set-macro-webhook" type="text" placeholder="https://trigger.macrodroid.com/&lt;device-id&gt;/" autocomplete="off">
       </label>
@@ -102,11 +107,13 @@
       <div class="model-row">
         <div class="model-name">
           Gemini: <span id="gemini-model-label">—</span><br>
-          Groq: <span id="groq-model-label">—</span>
+          Groq: <span id="groq-model-label">—</span><br>
+          OpenRouter: <span id="openrouter-model-label">—</span>
         </div>
         <div class="model-actions">
           <button id="btn-reset-gemini" class="btn ghost" type="button">Reset Gemini</button>
           <button id="btn-reset-groq" class="btn ghost" type="button">Reset Groq</button>
+          <button id="btn-reset-openrouter" class="btn ghost" type="button">Reset OpenRouter</button>
         </div>
       </div>
       <div class="modal-actions">

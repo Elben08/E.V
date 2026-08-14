@@ -21,6 +21,11 @@ const GROQ_MODELS = [
   { id: 'llama-3.3-70b-versatile', vision: false },
   { id: 'llama-3.1-8b-instant', vision: false }
 ];
+/* The Free Models Router (openrouter/free) auto-picks a free model that supports the request's
+   features (vision included), so one entry stays resilient as the free list churns. */
+const OPENROUTER_MODELS = [
+  { id: 'openrouter/free', vision: true }
+];
 
 const PRIVATE_ON_RE = /\b(this is private|private mode on|secure this conversation|secure this session|enter private mode)\b/i;
 const PRIVATE_OFF_RE = /\b(private mode off|not private anymore|this is not private|declassify|exit private mode)\b/i;
@@ -91,12 +96,14 @@ const STORAGE = {
   privateMode: 'ev.privateMode',
   geminiModel: 'ev.geminiModel',
   groqModel: 'ev.groqModel',
+  openrouterModel: 'ev.openrouterModel',
   conversationSummary: 'ev.conversationSummary'
 };
 
 const DEFAULT_SETTINGS = {
   geminiKey: '',
   groqKey: '',
+  openrouterKey: '',
   provider: 'auto',
   privacy: 'auto',
   voice: true,
@@ -104,7 +111,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -167,9 +174,12 @@ function readFileAsDataURL(file) {
   });
 }
 
-function estimateTokens(text, accurate) {
+const ACCURATE_RATIO = 1.7;
+const TIGHT_RATIO = 2.0;
+
+function estimateTokens(text, ratio) {
   if (!text) return 0;
-  return accurate ? Math.ceil((text.length / 4) * 1.7) : Math.ceil(text.length / 4);
+  return Math.ceil((text.length / 4) * (ratio || 1));
 }
 
 function loadImage(src) {
@@ -228,7 +238,7 @@ async function fitGroqBudget(attachments, text) {
 }
 
 const GROQ_TEXT_BUDGET = 4400;
-const GROQ_TIGHT_TEXT_BUDGET = 3600;
+const GROQ_TIGHT_TEXT_BUDGET = 3200;
 const FACTS_EST_BUDGET = 800;
 const SUMMARY_TRIM_EST = 3000;
 const SUMMARY_KEEP = 8;
@@ -236,7 +246,7 @@ const SUMMARY_MIN_GAP = 8;
 const SUMMARY_CHUNK_EST = 2400;
 const SUMMARY_MAX_CHARS = 1600;
 const SUMMARY_PROMPT = 'You are E.V\u2019s conversation-compactor. Combine the conversation below into one tight, continuous summary that lets a later AI recover full context: what the user asked, key facts, decisions, and the user\u2019s current goals/state. Keep it under ~150 words. Preserve exact names and dates. Do not invent new information.\n\n';
-const TOO_LARGE_MSG = 'The request is too large for Groq\u2019s free limit. Try a shorter conversation, or ask Gemini instead.';
+const TOO_LARGE_MSG = 'The request is too large for the free-tier limit. Try a shorter conversation, or ask a different provider.';
 const FAILED_MSG_PLACEHOLDER = '[previous reply failed \u2014 no answer]';
 const MAX_AUTO_RETRY = 2;
 const RATE_RETRY_DEFAULT_MS = 12000;
@@ -246,7 +256,16 @@ function isTooLargeError(msg) {
   return /request too large|reduce message size|tokens per minute|tpm/i.test(msg || '');
 }
 
-const RATE_HINT = ' This usually clears in a minute \u2014 if it persists, check your free-tier quota at aistudio.google.com.';
+function isDailyQuotaError(detail) {
+  return /daily|quota exceeded|free_tier_requests|per day\b|resets? at midnight|purchased credits|free.*credits|RPD/i.test(detail || '');
+}
+
+const RATE_HINT_PER_MINUTE = ' This usually clears in a minute \u2014 if it persists, check your free-tier quota.';
+const RATE_HINT_DAILY = ' This is a daily free-tier cap \u2014 it resets at midnight, or switch to a different model/provider.';
+
+function rateHint(detail) {
+  return isDailyQuotaError(detail) ? RATE_HINT_DAILY : RATE_HINT_PER_MINUTE;
+}
 
 function retrySecondsFrom(detail) {
   if (!detail) return 0;
@@ -270,14 +289,14 @@ function friendlyRateLimit(label, err) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function estimateMessagesTokens(messages, accurate) {
+function estimateMessagesTokens(messages, ratio) {
   let total = 0;
   for (const m of messages) {
-    if (typeof m.content === 'string') total += estimateTokens(m.content, accurate);
+    if (typeof m.content === 'string') total += estimateTokens(m.content, ratio);
     else if (Array.isArray(m.content)) {
       for (const p of m.content) {
-        if (typeof p === 'string') total += estimateTokens(p, accurate);
-        else if (p && typeof p.text === 'string') total += estimateTokens(p.text, accurate);
+        if (typeof p === 'string') total += estimateTokens(p, ratio);
+        else if (p && typeof p.text === 'string') total += estimateTokens(p.text, ratio);
         else if (p && p.type === 'image_url') total += 800;
       }
     }
@@ -285,19 +304,19 @@ function estimateMessagesTokens(messages, accurate) {
   return total;
 }
 
-function fitGroqTextBudget(userText, attachments, budget, accurate) {
+function fitOpenAITextBudget(provider, userText, attachments, budget, ratio) {
   const b = budget || GROQ_TEXT_BUDGET;
-  const messages = buildMessages('groq', userText, attachments);
-  if (estimateMessagesTokens(messages, accurate) <= b) {
+  const messages = buildMessages(provider, userText, attachments);
+  if (estimateMessagesTokens(messages, ratio) <= b) {
     return { messages: messages, fits: true, trimmed: false, estimated: 0 };
   }
   const histArr = history.slice();
   for (let keep = histArr.length - 1; keep >= 0; keep--) {
     const hist = keep === 0 ? [] : histArr.slice(histArr.length - keep);
-    const m = buildMessages('groq', userText, attachments, hist);
-    if (estimateMessagesTokens(m, accurate) <= b) {
+    const m = buildMessages(provider, userText, attachments, hist);
+    if (estimateMessagesTokens(m, ratio) <= b) {
       const last = m[m.length - 1];
-      const note = '\n[Note: the earlier part of this conversation was trimmed to fit Groq\u2019s free limit.]';
+      const note = '\n[Note: the earlier part of this conversation was trimmed to fit the free limit.]';
       if (last && last.content) {
         if (typeof last.content === 'string') last.content += note;
         else if (Array.isArray(last.content)) last.content.push({ type: 'text', text: note });
@@ -305,14 +324,16 @@ function fitGroqTextBudget(userText, attachments, budget, accurate) {
       return { messages: m, fits: true, trimmed: true, estimated: 0 };
     }
   }
-  return { messages: messages, fits: false, trimmed: false, estimated: estimateMessagesTokens(messages, accurate) };
+  return { messages: messages, fits: false, trimmed: false, estimated: estimateMessagesTokens(messages, ratio) };
 }
 
-async function groqSendFitted(userText, attachments, token, maxTokens) {
-  const start = attachments.length ? firstVisionIndex('groq') : undefined;
-  const fit = fitGroqTextBudget(userText, attachments);
+async function openAISendFitted(provider, userText, attachments, token, maxTokens) {
+  const start = attachments.length ? firstVisionIndex(provider) : undefined;
+  const send = (msgs) => provider === 'groq'
+    ? sendToGroq(msgs, token, start, maxTokens)
+    : sendToOpenRouter(msgs, token, start, maxTokens);
+  const fit = fitOpenAITextBudget(provider, userText, attachments);
   if (!fit.fits) throw new Error(TOO_LARGE_MSG);
-  const send = (msgs) => sendToGroq(msgs, token, start, maxTokens);
   let lastErr = null;
   try {
     await send(fit.messages);
@@ -322,7 +343,7 @@ async function groqSendFitted(userText, attachments, token, maxTokens) {
     lastErr = err;
   }
   await sleep(1500);
-  const tight = fitGroqTextBudget(userText, attachments, GROQ_TIGHT_TEXT_BUDGET, true);
+  const tight = fitOpenAITextBudget(provider, userText, attachments, GROQ_TIGHT_TEXT_BUDGET, TIGHT_RATIO);
   if (!tight.fits) throw lastErr.rateLimited ? lastErr : new Error(TOO_LARGE_MSG);
   try {
     await send(tight.messages);
@@ -342,6 +363,12 @@ async function summarizeOnce(provider, content) {
         { role: 'system', content: SUMMARY_PROMPT + 'Conversation so far:\n' + content },
         { role: 'user', content: 'Produce the summary now.' }
       ], collect, undefined, 800);
+    } else if (p === 'openrouter') {
+      if (!settings.openrouterKey) throw new Error('no OpenRouter key');
+      await sendToOpenRouter([
+        { role: 'system', content: SUMMARY_PROMPT + 'Conversation so far:\n' + content },
+        { role: 'user', content: 'Produce the summary now.' }
+      ], collect, undefined, 800);
     } else {
       if (!settings.geminiKey) throw new Error('no Gemini key');
       await sendToGemini([
@@ -350,7 +377,7 @@ async function summarizeOnce(provider, content) {
     }
     return acc.join('').trim();
   };
-  const other = provider === 'groq' ? 'gemini' : 'groq';
+  const other = provider === 'groq' ? 'gemini' : (provider === 'openrouter' ? (settings.geminiKey ? 'gemini' : 'groq') : 'groq');
   let text;
   try {
     text = await run(provider);
@@ -380,7 +407,7 @@ async function maybeSummarizeHistory(providerSucceeded) {
     let cur = [];
     let curEst = 0;
     for (const line of lines) {
-      const t = estimateTokens(line, true);
+      const t = estimateTokens(line, ACCURATE_RATIO);
       if (cur.length && curEst + t > SUMMARY_CHUNK_EST) {
         chunks.push(cur.join('\n'));
         cur = [];
@@ -391,7 +418,7 @@ async function maybeSummarizeHistory(providerSucceeded) {
     }
     if (cur.length) chunks.push(cur.join('\n'));
     let rolling = conversationSummary;
-    const provider = providerSucceeded === 'groq' ? 'groq' : 'gemini';
+    const provider = providerSucceeded === 'groq' ? 'groq' : (providerSucceeded === 'openrouter' && settings.openrouterKey ? 'openrouter' : 'gemini');
     for (const chunk of chunks) {
       const content = (rolling ? 'Previous summary:\n' + rolling + '\n\n' : '') + chunk;
       rolling = await summarizeOnce(provider, content);
@@ -537,15 +564,36 @@ function getAttachmentText() {
 let busy = false;
 let activeModels = {
   gemini: loadJSON(STORAGE.geminiModel, 0),
-  groq: loadJSON(STORAGE.groqModel, 0)
+  groq: loadJSON(STORAGE.groqModel, 0),
+  openrouter: loadJSON(STORAGE.openrouterModel, 0)
 };
 
+const OUTAGE_MS = 300000;
+let providerOut = {};
+
+function isProviderOut(provider) {
+  const t = providerOut[provider];
+  return !!t && Date.now() - t < OUTAGE_MS;
+}
+
+function markProviderOut(provider) {
+  providerOut[provider] = Date.now();
+}
+
+function clearProviderOut(provider) {
+  delete providerOut[provider];
+}
+
 function modelList(provider) {
-  return provider === 'gemini' ? GEMINI_MODELS : GROQ_MODELS;
+  if (provider === 'gemini') return GEMINI_MODELS;
+  if (provider === 'openrouter') return OPENROUTER_MODELS;
+  return GROQ_MODELS;
 }
 
 function modelStoreKey(provider) {
-  return provider === 'gemini' ? STORAGE.geminiModel : STORAGE.groqModel;
+  if (provider === 'gemini') return STORAGE.geminiModel;
+  if (provider === 'openrouter') return STORAGE.openrouterModel;
+  return STORAGE.groqModel;
 }
 
 function clampModelIndex(list, index) {
@@ -591,8 +639,8 @@ function isModelUnavailable(message) {
 
 const el = {};
 const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'attach-tray', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
-  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-provider', 'set-privacy', 'set-voice', 'set-hands-free', 'set-macro-webhook',
-  'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'btn-reset-gemini', 'btn-reset-groq',
+  'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-openrouter', 'set-provider', 'set-privacy', 'set-voice', 'set-hands-free', 'set-macro-webhook',
+  'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'openrouter-model-label', 'btn-reset-gemini', 'btn-reset-groq', 'btn-reset-openrouter',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new',
   'voice-overlay', 'vo-transcript', 'vo-status'];
@@ -618,13 +666,23 @@ function analyzeSensitivity(text) {
 
 function chooseProvider(analysis) {
   const p = settings.provider;
+  const groqOk = !!settings.groqKey;
   if (p === 'gemini') return { provider: 'gemini', reason: '' };
   if (p === 'groq') return { provider: 'groq', reason: 'settings' };
+  if (p === 'openrouter') {
+    /* free-router models may train on data: keep sensitive/private on Groq whenever possible */
+    if ((analysis.sensitive || privateMode) && groqOk) return { provider: 'groq', reason: 'sensitive' };
+    return { provider: 'openrouter', reason: 'settings' };
+  }
   const priv = settings.privacy;
   if (priv === 'groq') return { provider: 'groq', reason: 'policy' };
   if (priv === 'auto' && analysis.sensitive) return { provider: 'groq', reason: 'sensitive' };
   if (priv === 'auto' && privateMode) return { provider: 'groq', reason: 'private' };
   if (priv === 'manual' && (analysis.private || privateMode)) return { provider: 'groq', reason: 'private' };
+  /* auto: route around providers known to be out this session */
+  if (isProviderOut('gemini') && groqOk) return { provider: 'groq', reason: 'gemini-out' };
+  if (isProviderOut('groq') && !isProviderOut('gemini') && settings.geminiKey) return { provider: 'gemini', reason: 'groq-out' };
+  if (isProviderOut('gemini') && isProviderOut('groq') && settings.openrouterKey) return { provider: 'openrouter', reason: 'outage' };
   return { provider: 'gemini', reason: '' };
 }
 
@@ -673,6 +731,7 @@ function buildMessages(provider, userText, attachments, hist) {
   }
   const messages = [{ role: 'system', content: buildSystem(provider) }];
   for (const h of histArr) {
+    if (provider === 'openrouter' && h.sensitive) continue;
     messages.push({ role: h.role === 'user' ? 'user' : 'assistant', content: h.failed ? FAILED_MSG_PLACEHOLDER : h.text });
   }
   const content = [];
@@ -748,6 +807,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     err.rateLimited = true;
     err.detail = detail;
     err.retryDelayMs = retrySecondsFrom(detail) * 1000;
+    err.dailyQuota = isDailyQuotaError(detail);
     return err;
   };
 
@@ -826,26 +886,33 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
       await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
     } catch (e) {
       if (e.rateLimited) {
+        /* daily per-model cap (20 req/day): skip the ~18s recover loop and rotate to the next model */
+        if (e.dailyQuota) { lastErr = e; continue; }
         if (await recover(model)) { setActiveModel('gemini', i); return; }
-        throw e;
+        lastErr = e;
+        continue;
       }
       lastErr = e;
       if (!isModelUnavailable(e.message)) {
         let recovered = false;
+        let dailyHit = false;
         for (let r = 0; r < 3 && !recovered; r++) {
           try {
             await attempt(model, 'generateContent', false);
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
+              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; break; }
               if (await recover(model)) { setActiveModel('gemini', i); return; }
-              throw e2;
+              lastErr = e2;
+              break;
             }
             lastErr = e2;
             if (isModelUnavailable(e2.message)) break;
             if (!/MALFORMED_FUNCTION_CALL/.test(e2.message)) throw e2;
           }
         }
+        if (dailyHit) continue;
         if (recovered) { setActiveModel('gemini', i); return; }
         if (isModelUnavailable(lastErr.message)) continue;
         throw lastErr;
@@ -855,6 +922,10 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     }
     setActiveModel('gemini', i);
     return;
+  }
+  if (lastErr && lastErr.rateLimited) {
+    markProviderOut('gemini');
+    throw lastErr;
   }
   throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
@@ -868,13 +939,18 @@ async function sendToGroq(messages, onToken, startIndex, maxTokens) {
     try {
       await groqAttempt(GROQ_MODELS[i].id, messages, onToken, maxTokens);
     } catch (e) {
-      if (e.rateLimited) throw e;
+      if (e.rateLimited) { lastErr = e; continue; }
+      if (e.tooLarge) throw e;
       lastErr = e;
       if (!isModelUnavailable(e.message)) throw e;
       continue;
     }
     setActiveModel('groq', i);
     return;
+  }
+  if (lastErr && lastErr.rateLimited) {
+    markProviderOut('groq');
+    throw lastErr;
   }
   throw new Error('All Groq models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
@@ -907,10 +983,13 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
     return { msg, delay };
   };
   const rateLimitedError = (detail, delay) => {
-    const err = new Error(detail && /tokens per minute|tpm|rate ?limit/i.test(detail) ? detail : 'RATE_LIMIT');
-    err.rateLimited = true;
+    const tooLarge = isTooLargeError(detail);
+    const err = new Error(tooLarge ? detail : (detail && /tokens per minute|tpm|rate ?limit/i.test(detail) ? detail : 'RATE_LIMIT'));
+    err.rateLimited = !tooLarge;
+    err.tooLarge = tooLarge;
     err.detail = detail || 'quota reached';
     err.retryDelayMs = delay ? delay * 1000 : retrySecondsFrom(detail) * 1000;
+    err.dailyQuota = isDailyQuotaError(detail);
     return err;
   };
   if (res.status === 429) {
@@ -935,6 +1014,98 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
   }
 }
 
+async function sendToOpenRouter(messages, onToken, startIndex, maxTokens) {
+  const start = typeof startIndex === 'number' && startIndex >= 0 && startIndex < OPENROUTER_MODELS.length
+    ? startIndex
+    : clampModelIndex(OPENROUTER_MODELS, activeModels.openrouter);
+  let lastErr = null;
+  for (let i = start; i < OPENROUTER_MODELS.length; i++) {
+    try {
+      await openRouterAttempt(OPENROUTER_MODELS[i].id, messages, onToken, maxTokens);
+    } catch (e) {
+      if (e.rateLimited) { lastErr = e; continue; }
+      if (e.tooLarge) throw e;
+      lastErr = e;
+      if (!isModelUnavailable(e.message)) throw e;
+      continue;
+    }
+    setActiveModel('openrouter', i);
+    return;
+  }
+  if (lastErr && lastErr.rateLimited) {
+    markProviderOut('openrouter');
+    throw lastErr;
+  }
+  throw new Error('All OpenRouter models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
+}
+
+async function openRouterAttempt(model, messages, onToken, maxTokens) {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + settings.openrouterKey,
+      'X-Title': 'E.V',
+      'HTTP-Referer': 'https://elben08.github.io/E.V/'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: messages,
+      temperature: 0.7,
+      max_tokens: maxTokens || 8192,
+      stream: true
+    })
+  });
+  const orDetail = async (r) => {
+    let msg = 'HTTP ' + r.status;
+    let delay = 0;
+    const ra = r.headers && r.headers.get('Retry-After');
+    if (ra) delay = parseFloat(ra) || 0;
+    try {
+      const j = await r.json();
+      if (j && j.error) {
+        if (j.error.message) msg = j.error.message;
+        if (!delay && typeof j.error.retry_after === 'number') delay = j.error.retry_after;
+      }
+    } catch (e) { /* status only */ }
+    return { msg, delay };
+  };
+  const rateLimitedError = (detail, delay) => {
+    const tooLarge = isTooLargeError(detail);
+    const err = new Error(tooLarge ? detail : 'RATE_LIMIT');
+    err.rateLimited = !tooLarge;
+    err.tooLarge = tooLarge;
+    err.detail = detail || 'quota reached';
+    err.retryDelayMs = delay ? delay * 1000 : retrySecondsFrom(detail) * 1000;
+    err.dailyQuota = isDailyQuotaError(detail);
+    return err;
+  };
+  if (res.status === 402) {
+    const g = await orDetail(res);
+    throw new Error('OpenRouter needs credit for this request (' + g.msg + '). Add credit at openrouter.ai or use a free model.');
+  }
+  if (res.status === 429) {
+    const g = await orDetail(res);
+    throw rateLimitedError(g.msg, g.delay);
+  }
+  if (!res.ok) {
+    const g = await orDetail(res);
+    if (isTooLargeError(g.msg)) throw rateLimitedError(g.msg, g.delay);
+    throw new Error(g.msg);
+  }
+  try {
+    await readSSE(res, (j) => {
+      const d = j.choices && j.choices[0] && j.choices[0].delta;
+      if (d && typeof d.content === 'string' && d.content) onToken(d.content);
+    }, (err) => {
+      throw new Error((err && err.message) || 'OpenRouter stream error');
+    });
+  } catch (e) {
+    if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
+    throw e;
+  }
+}
+
 function show(node) { node.classList.remove('hidden'); }
 function hide(node) { node.classList.add('hidden'); }
 function scrollChat() { el.chat.scrollTop = el.chat.scrollHeight; }
@@ -945,7 +1116,7 @@ function setStatus(label, cls) {
 }
 
 function setReactor(state) {
-  if (!settings.geminiKey && !settings.groqKey) state = 'off';
+  if (!settings.geminiKey && !settings.groqKey && !settings.openrouterKey) state = 'off';
   el.reactor.className = 'reactor' + (state ? ' ' + state : '');
   el.reactor.setAttribute('aria-pressed', state === 'listening' ? 'true' : 'false');
 }
@@ -1026,17 +1197,18 @@ function writeEvEntry(entryRef, entry) {
 }
 
 function baseLabelFor(ctx) {
-  return ctx.provider === 'gemini'
-    ? 'gemini · ' + getActiveModel('gemini')
-    : 'groq' + (ctx.reason ? ' · ' + ctx.reason : '') + ' · ' + getActiveModel('groq');
+  if (ctx.provider === 'gemini') return 'gemini · ' + getActiveModel('gemini');
+  if (ctx.provider === 'openrouter') return 'openrouter' + (ctx.reason ? ' · ' + ctx.reason : '') + ' · ' + getActiveModel('openrouter');
+  return 'groq' + (ctx.reason ? ' · ' + ctx.reason : '') + ' · ' + getActiveModel('groq');
 }
 
 async function retryHistoryEntry(bubble, index) {
   const h = history[index];
   if (!h || !h.failed) return;
+  const prov = h.retryProvider || (h.provider && h.provider.indexOf('gemini') === 0 ? 'gemini' : h.provider && h.provider.indexOf('openrouter') === 0 ? 'openrouter' : 'groq');
   await performReply(bubble, {
     userText: h.retryUserText || h.text,
-    provider: h.retryProvider || (h.provider && h.provider.indexOf('gemini') === 0 ? 'gemini' : 'groq'),
+    provider: prov,
     reason: h.retryReason || '',
     sensitive: !!h.sensitive,
     attachments: [],
@@ -1501,8 +1673,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
 
   const autoRetryRateLimit = async (err) => {
     const delayMs = rateLimitDelayMs(err);
-    if (retriesLeft <= 0) { failThis(err.message || 'Rate-limited. Try again in a moment.' + RATE_HINT); return; }
-    const msg = 'E.V hit a rate limit (Gemini and/or Groq). Retrying automatically in ' + Math.ceil(delayMs / 1000) + 's\u2026';
+    if (retriesLeft <= 0) { failThis(err.message || 'Rate-limited. Try again in a moment.' + rateHint(err && err.detail)); return; }
+    const detail = (err && err.detail) ? ' (' + String(err.detail).slice(0, 140) + ')' : '';
+    const msg = 'E.V hit a rate limit' + detail + '. Retrying automatically in ' + Math.ceil(delayMs / 1000) + 's\u2026';
     writeEvEntry(ctx.entryRef, {
       role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, errorMsg: err.message || '',
       provider: usedLabel, retryUserText: ctx.userText, retryProvider: ctx.provider, retryReason: ctx.reason
@@ -1531,41 +1704,92 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     ? friendlyRateLimit('Gemini', geminiErr)
     : 'Gemini error: ' + geminiErr.message;
 
+  const markFallbackNote = (label, reasonText) => {
+    usedLabel = label;
+    bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
+    const via = label.indexOf('openrouter') === 0 ? 'OpenRouter' : 'Groq';
+    const noteEl = document.createElement('div');
+    noteEl.className = 'fallback-note';
+    noteEl.textContent = reasonText + ' — using ' + via + '.';
+    bubble.appendChild(noteEl);
+    toast(reasonText + ' — using ' + via + '.');
+  };
+
+  const fallbackToOpenRouter = async (prevErr) => {
+    if (!settings.openrouterKey) throw prevErr;
+    /* free-router may train on data: only text-only, non-sensitive turns */
+    if (curHasPdf || curHasImage || ctx.sensitive || privateMode) throw prevErr;
+    try {
+      await openAISendFitted('openrouter', ctx.userText, [], token, curGroqMaxTokens);
+    } catch (orErr) {
+      if (orErr.rateLimited) {
+        if (prevErr.rateLimited) {
+          const both = new Error(prevErr.message + ' OpenRouter is also rate-limited right now (' + (orErr.detail || 'quota reached') + ').' + rateHint(orErr.detail));
+          both.bothRateLimited = true;
+          both.retryDelayMs = Math.max(prevErr.retryDelayMs || 0, orErr.retryDelayMs || 0);
+          throw both;
+        }
+        throw new Error(prevErr.message + ' OpenRouter is also rate-limited right now (' + (orErr.detail || 'quota reached') + ').');
+      }
+      if (orErr.tooLarge || isTooLargeError(orErr.message) || orErr.message === TOO_LARGE_MSG) {
+        throw new Error(prevErr.message + ' OpenRouter also can\u2019t fit this request \u2014 try a shorter message, or clear Memory / start a new conversation.');
+      }
+      throw new Error(prevErr.message + ' \u2014 OpenRouter also failed: ' + orErr.message);
+    }
+    markFallbackNote('openrouter · fallback · ' + getActiveModel('openrouter'), prevErr.message);
+    succeededProvider = 'openrouter';
+    clearProviderOut('openrouter');
+  };
+
   const fallbackToGroq = async (geminiErr) => {
     const gFail = geminiFailure(geminiErr);
-    if (!settings.groqKey) throw new Error(gFail + ', and no Groq key is set to fall back to.' + (geminiErr.rateLimited ? RATE_HINT : ''));
+    if (!settings.groqKey) {
+      if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
+        await fallbackToOpenRouter(geminiErr);
+        return;
+      }
+      throw new Error(gFail + ', and no Groq key is set to fall back to.' + (geminiErr.rateLimited ? rateHint(geminiErr.detail) : ''));
+    }
     if (curHasPdf) throw new Error(gFail + ' (and PDF attachments can\u2019t fall back to Groq).');
     if (curHasImage) {
       const fits = await fitGroqBudget(attachments, ctx.userText);
       if (!fits) throw new Error(gFail + ' (and the image is too large for Groq\u2019s free limit even after compression).');
-      await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens);
-    } else {
       try {
-        await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
+        await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens);
       } catch (err) {
         if (err.rateLimited) {
-          const both = new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.' + RATE_HINT);
+          const both = new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + ').' + rateHint(err.detail));
           both.bothRateLimited = true;
           both.retryDelayMs = Math.max(geminiErr.retryDelayMs || 0, err.retryDelayMs || 0);
           throw both;
         }
-        if (isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
+        throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
+      }
+    } else {
+      try {
+        await openAISendFitted('groq', ctx.userText, attachments, token, curGroqMaxTokens);
+      } catch (err) {
+        if (err.rateLimited) {
+          /* Groq hot too: try OpenRouter before giving up */
+          try {
+            await fallbackToOpenRouter(geminiErr);
+            return;
+          } catch (orErr) {
+            if (orErr.bothRateLimited) throw orErr;
+            throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
+          }
+        }
+        if (err.tooLarge || isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
           throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         }
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
       }
     }
-    usedLabel = 'groq · fallback · ' + getActiveModel('groq');
-    bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
-    const noteEl = document.createElement('div');
-    noteEl.className = 'fallback-note';
-    const reasonText = geminiErr.rateLimited
+    markFallbackNote('groq · fallback · ' + getActiveModel('groq'), geminiErr.rateLimited
       ? 'Gemini is temporarily rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
-      : 'Gemini error: ' + geminiErr.message;
-    noteEl.textContent = reasonText + ' — using Groq.';
-    bubble.appendChild(noteEl);
-    toast(reasonText + ' — using Groq.');
+      : 'Gemini error: ' + geminiErr.message);
     succeededProvider = 'groq';
+    clearProviderOut('groq');
   };
 
   if (ctx.provider === 'gemini') {
@@ -1573,6 +1797,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     try {
       await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, useLive);
       succeededProvider = 'gemini';
+      clearProviderOut('gemini');
     } catch (err) {
       try {
         await fallbackToGroq(err);
@@ -1582,21 +1807,48 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         return;
       }
     }
+  } else if (ctx.provider === 'openrouter') {
+    try {
+      await openAISendFitted('openrouter', ctx.userText, attachments, token, curGroqMaxTokens);
+    } catch (err) {
+      if (err.rateLimited) { await autoRetryRateLimit(err); return; }
+      failThis(err.tooLarge || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG
+        ? 'OpenRouter can\u2019t fit this request right now \u2014 try a shorter message, or clear Memory / start a new conversation.'
+        : err.message);
+      return;
+    }
+    succeededProvider = 'openrouter';
+    clearProviderOut('openrouter');
   } else {
     try {
       if (curHasImage) {
         await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens);
       } else {
-        await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
+        await openAISendFitted('groq', ctx.userText, attachments, token, curGroqMaxTokens);
       }
     } catch (err) {
-      if (err.rateLimited) { await autoRetryRateLimit(err); return; }
+      if (err.rateLimited) {
+        /* Groq hot: fall back to OpenRouter for text-only, non-sensitive turns */
+        if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasImage && !curHasPdf) {
+          try {
+            await fallbackToOpenRouter(err);
+            return;
+          } catch (orErr) {
+            if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
+            failThis(orErr.message);
+            return;
+          }
+        }
+        await autoRetryRateLimit(err);
+        return;
+      }
       failThis(isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG
         ? 'Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.'
         : err.message);
       return;
     }
     succeededProvider = 'groq';
+    clearProviderOut('groq');
   }
 
   busy = false;
@@ -1638,6 +1890,10 @@ async function send(rawText) {
     toast('Groq can\u2019t read PDFs. Remove the PDF or switch provider to Gemini.');
     return;
   }
+  if (hasPdf && provider === 'openrouter') {
+    toast('OpenRouter can\u2019t read PDFs in E.V yet. Remove the PDF or switch provider to Gemini.');
+    return;
+  }
   const hasImage = pendingAttachments.some((a) => a.kind === 'image');
   if (provider === 'groq' && hasImage) {
     const fits = await fitGroqBudget(pendingAttachments, text + note);
@@ -1646,10 +1902,13 @@ async function send(rawText) {
       return;
     }
   }
+  if (provider === 'openrouter' && !settings.openrouterKey) { fail('Add your OpenRouter API key in Settings (gear icon).'); return; }
 
   const baseLabel = provider === 'gemini'
     ? 'gemini · ' + getActiveModel('gemini')
-    : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
+    : provider === 'openrouter'
+      ? 'openrouter' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('openrouter')
+      : 'groq' + (reason ? ' · ' + reason : '') + ' · ' + getActiveModel('groq');
 
   if (provider === 'gemini' && !settings.geminiKey) { fail('Add your Gemini API key in Settings (gear icon).'); return; }
   if (provider === 'groq' && !settings.groqKey) { fail('Add your Groq API key in Settings (gear icon).'); return; }
@@ -1670,6 +1929,7 @@ function openSettings() {
   el['app-version'].textContent = 'Version ' + APP_VERSION;
   el['set-gemini'].value = settings.geminiKey;
   el['set-groq'].value = settings.groqKey;
+  el['set-openrouter'].value = settings.openrouterKey;
   el['set-provider'].value = settings.provider;
   el['set-privacy'].value = settings.privacy;
   el['set-voice'].checked = settings.voice;
@@ -1677,12 +1937,14 @@ function openSettings() {
   el['set-macro-webhook'].value = settings.macroWebhook;
   el['gemini-model-label'].textContent = modelLabel('gemini');
   el['groq-model-label'].textContent = modelLabel('groq');
+  el['openrouter-model-label'].textContent = modelLabel('openrouter');
   show(el['modal-settings']);
 }
 
 function saveSettingsForm() {
   settings.geminiKey = el['set-gemini'].value.trim();
   settings.groqKey = el['set-groq'].value.trim();
+  settings.openrouterKey = el['set-openrouter'].value.trim();
   settings.provider = el['set-provider'].value;
   settings.privacy = el['set-privacy'].value;
   settings.voice = el['set-voice'].checked;
@@ -1702,6 +1964,7 @@ async function testConnections() {
   const lines = [];
   const geminiKey = el['set-gemini'].value.trim();
   const groqKey = el['set-groq'].value.trim();
+  const openrouterKey = el['set-openrouter'].value.trim();
 
   const describe = async (res) => {
     if (res.status === 429) return 'RATE LIMITED (quota reached)';
@@ -1770,6 +2033,35 @@ async function testConnections() {
     if (!found) lines.push('→ no working Groq model found');
   } else {
     lines.push('Groq: no key entered');
+  }
+
+  if (openrouterKey) {
+    let found = false;
+    for (const m of OPENROUTER_MODELS) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openrouterKey, 'X-Title': 'E.V' },
+          body: JSON.stringify({
+            model: m.id,
+            messages: [{ role: 'user', content: 'Reply with the single word OK' }],
+            max_tokens: 5
+          })
+        });
+        lines.push('OpenRouter ' + m.id + ': ' + await describe(res));
+        if (res.ok) {
+          setActiveModel('openrouter', OPENROUTER_MODELS.indexOf(m));
+          lines.push('→ active OpenRouter model set to ' + m.id);
+          found = true;
+          break;
+        }
+      } catch (e) {
+        lines.push('OpenRouter ' + m.id + ': network/CORS error — ' + e.message);
+      }
+    }
+    if (!found) lines.push('→ no working OpenRouter model found');
+  } else {
+    lines.push('OpenRouter: no key entered');
   }
 
   out.textContent = lines.join('\n');
@@ -1878,11 +2170,12 @@ function init() {
   el['btn-test'].addEventListener('click', testConnections);
   const resetModel = (provider) => {
     const m = resetActiveModel(provider);
-    el[provider === 'gemini' ? 'gemini-model-label' : 'groq-model-label'].textContent = modelLabel(provider);
-    toast((provider === 'gemini' ? 'Gemini' : 'Groq') + ' model reset to ' + m);
+    el[provider === 'gemini' ? 'gemini-model-label' : provider === 'openrouter' ? 'openrouter-model-label' : 'groq-model-label'].textContent = modelLabel(provider);
+    toast((provider === 'gemini' ? 'Gemini' : provider === 'openrouter' ? 'OpenRouter' : 'Groq') + ' model reset to ' + m);
   };
   el['btn-reset-gemini'].addEventListener('click', () => resetModel('gemini'));
   el['btn-reset-groq'].addEventListener('click', () => resetModel('groq'));
+  el['btn-reset-openrouter'].addEventListener('click', () => resetModel('openrouter'));
   el['btn-memory'].addEventListener('click', openMemory);
   el['btn-new'].addEventListener('click', startNewConversation);
   el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
