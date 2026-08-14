@@ -104,7 +104,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v32';
+const APP_VERSION = 'v33';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1096,7 +1096,7 @@ let handsFreeBuffer = '';
 let handsFreeLastSpeech = 0;
 let handsfreeSendTimer = 0;
 const HANDS_FREE_DELAY = 3000;
-const WAKE_RE = /^\s*(?:(?:hey there|hey|okay|ok|listen|yo)\s+)?e[\s.]*v\b/i;
+const WAKE_RE = /^\s*(?:(?:hey there|hey|okay|ok|listen|yo)[,\s]+)?e[\s.]*v(?:ie|ee)?\b/i;
 const EXIT_RE = /\b(?:stop listening|exit hands[- ]?free|hands[- ]?free off|goodbye|good bye)\b/i;
 
 function stripWakePhrase(text) {
