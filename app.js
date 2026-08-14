@@ -104,7 +104,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -238,12 +238,31 @@ const SUMMARY_MAX_CHARS = 1600;
 const SUMMARY_PROMPT = 'You are E.V\u2019s conversation-compactor. Combine the conversation below into one tight, continuous summary that lets a later AI recover full context: what the user asked, key facts, decisions, and the user\u2019s current goals/state. Keep it under ~150 words. Preserve exact names and dates. Do not invent new information.\n\n';
 const TOO_LARGE_MSG = 'The request is too large for Groq\u2019s free limit. Try a shorter conversation, or ask Gemini instead.';
 const FAILED_MSG_PLACEHOLDER = '[previous reply failed \u2014 no answer]';
+const MAX_AUTO_RETRY = 2;
+const RATE_RETRY_DEFAULT_MS = 12000;
+const RATE_RETRY_MAX_MS = 90000;
 
 function isTooLargeError(msg) {
   return /request too large|reduce message size|tokens per minute|tpm/i.test(msg || '');
 }
 
 const RATE_HINT = ' This usually clears in a minute \u2014 if it persists, check your free-tier quota at aistudio.google.com.';
+
+function retrySecondsFrom(detail) {
+  if (!detail) return 0;
+  let m = /retry[ -]?delay[^0-9]{0,8}(\d+(?:\.\d+)?)/i.exec(detail);
+  if (m) return parseFloat(m[1]);
+  m = /in (\d+(?:\.\d+)?)\s*s/i.exec(detail);
+  if (m) return parseFloat(m[1]);
+  m = /retry.*?(\d{2,3})/i.exec(detail);
+  if (m) return parseFloat(m[1]);
+  return 0;
+}
+
+function rateLimitDelayMs(err) {
+  const d = (err && err.retryDelayMs) || 0;
+  return Math.min(Math.max(d, RATE_RETRY_DEFAULT_MS), RATE_RETRY_MAX_MS);
+}
 
 function friendlyRateLimit(label, err) {
   return label + ' is rate-limited right now (' + (err && err.detail ? err.detail : 'quota reached') + '). Try again in a moment.';
@@ -351,7 +370,8 @@ async function maybeSummarizeHistory(providerSucceeded) {
   if (!safe.length) return;
   let est = 0;
   for (const h of safe) est += estimateTokens(h.text);
-  if (est <= SUMMARY_TRIM_EST) return;
+  /* fire on size (big old portion) OR on exchange count (short hands-free turns would otherwise never compact) */
+  if (est <= SUMMARY_TRIM_EST && history.length - lastSummaryLen < SUMMARY_MIN_GAP * 2) return;
   summarizing = true;
   const targetLen = history.length;
   try {
@@ -385,7 +405,12 @@ async function maybeSummarizeHistory(providerSucceeded) {
       lastSummaryLen = history.length;
     }
   } catch (e) {
-    /* best-effort: keep history and summary as-is on failure */
+    /* best-effort: if the summary providers are themselves rate-limited, at least keep history bounded */
+    if (e.rateLimited && history.length === targetLen) {
+      history = history.slice(-SUMMARY_KEEP);
+      saveJSON(STORAGE.history, history);
+      lastSummaryLen = history.length;
+    }
   } finally {
     summarizing = false;
   }
@@ -722,6 +747,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     const err = new Error('RATE_LIMIT');
     err.rateLimited = true;
     err.detail = detail;
+    err.retryDelayMs = retrySecondsFrom(detail) * 1000;
     return err;
   };
 
@@ -870,23 +896,31 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
   });
   const groqDetail = async (r) => {
     let msg = 'HTTP ' + r.status;
+    let delay = 0;
     try {
       const j = await r.json();
-      if (j && j.error && j.error.message) msg = j.error.message;
+      if (j && j.error) {
+        if (j.error.message) msg = j.error.message;
+        if (typeof j.error.retryDelay === 'number' && j.error.retryDelay > 0) delay = j.error.retryDelay;
+      }
     } catch (e) { /* status only */ }
-    return msg;
+    return { msg, delay };
   };
-  const rateLimitedError = (detail) => {
+  const rateLimitedError = (detail, delay) => {
     const err = new Error(detail && /tokens per minute|tpm|rate ?limit/i.test(detail) ? detail : 'RATE_LIMIT');
     err.rateLimited = true;
     err.detail = detail || 'quota reached';
+    err.retryDelayMs = delay ? delay * 1000 : retrySecondsFrom(detail) * 1000;
     return err;
   };
-  if (res.status === 429) throw rateLimitedError(await groqDetail(res));
+  if (res.status === 429) {
+    const g = await groqDetail(res);
+    throw rateLimitedError(g.msg, g.delay);
+  }
   if (!res.ok) {
-    const detail = await groqDetail(res);
-    if (/tokens per minute|tpm|rate ?limit/i.test(detail)) throw rateLimitedError(detail);
-    throw new Error(detail);
+    const g = await groqDetail(res);
+    if (/tokens per minute|tpm|rate ?limit/i.test(g.msg)) throw rateLimitedError(g.msg, g.delay);
+    throw new Error(g.msg);
   }
   try {
     await readSSE(res, (j) => {
@@ -1432,7 +1466,8 @@ function extractFacts(text) {
   }
 }
 
-async function performReply(bubble, ctx) {
+async function performReply(bubble, ctx, autoRetryLeft) {
+  const retriesLeft = typeof autoRetryLeft === 'number' ? autoRetryLeft : MAX_AUTO_RETRY;
   const attachments = ctx.attachments || [];
   const bodyEl = bubble.querySelector('.body');
   let usedLabel = baseLabelFor(ctx);
@@ -1464,6 +1499,24 @@ async function performReply(bubble, ctx) {
     failInBubble(bubble, msg, () => performReply(bubble, ctx));
   };
 
+  const autoRetryRateLimit = async (err) => {
+    const delayMs = rateLimitDelayMs(err);
+    if (retriesLeft <= 0) { failThis(err.message || 'Rate-limited. Try again in a moment.' + RATE_HINT); return; }
+    const msg = 'E.V hit a rate limit (Gemini and/or Groq). Retrying automatically in ' + Math.ceil(delayMs / 1000) + 's\u2026';
+    writeEvEntry(ctx.entryRef, {
+      role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, errorMsg: err.message || '',
+      provider: usedLabel, retryUserText: ctx.userText, retryProvider: ctx.provider, retryReason: ctx.reason
+    });
+    if (handsFreeActive) updateVoiceTranscript(msg);
+    bubble.classList.add('error');
+    bodyEl.textContent = msg;
+    scrollChat();
+    setStatus('rate-limited \u2014 retrying\u2026', 'busy');
+    toast(msg);
+    await sleep(delayMs);
+    await performReply(bubble, ctx, retriesLeft - 1);
+  };
+
   let reply = '';
   let succeededProvider = '';
   const token = (chunk) => {
@@ -1490,10 +1543,15 @@ async function performReply(bubble, ctx) {
       try {
         await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
       } catch (err) {
+        if (err.rateLimited) {
+          const both = new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.' + RATE_HINT);
+          both.bothRateLimited = true;
+          both.retryDelayMs = Math.max(geminiErr.retryDelayMs || 0, err.retryDelayMs || 0);
+          throw both;
+        }
         if (isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
           throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         }
-        if (err.rateLimited) throw new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + '). Try again in a moment.' + RATE_HINT);
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
       }
     }
@@ -1519,6 +1577,7 @@ async function performReply(bubble, ctx) {
       try {
         await fallbackToGroq(err);
       } catch (err2) {
+        if (err2.bothRateLimited) { await autoRetryRateLimit(err2); return; }
         failThis(err2.message);
         return;
       }
@@ -1531,9 +1590,10 @@ async function performReply(bubble, ctx) {
         await groqSendFitted(ctx.userText, attachments, token, curGroqMaxTokens);
       }
     } catch (err) {
+      if (err.rateLimited) { await autoRetryRateLimit(err); return; }
       failThis(isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG
         ? 'Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.'
-        : (err.rateLimited ? friendlyRateLimit('Groq', err) + RATE_HINT : err.message));
+        : err.message);
       return;
     }
     succeededProvider = 'groq';
