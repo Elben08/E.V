@@ -79,11 +79,11 @@ body::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.2;
 }
 .globe-svg {
   width: 520px;
   height: 520px;
+  opacity: 0.4;
   animation: globeSpin 80s linear infinite;
 }
 
