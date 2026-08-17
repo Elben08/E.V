@@ -84,7 +84,7 @@ body::after {
 .globe-svg {
   width: 520px;
   height: 520px;
-  opacity: 0.4;
+  opacity: 0.6;
   animation: globeSpin 80s linear infinite;
 }
 
