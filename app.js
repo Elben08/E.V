@@ -1,8 +1,11 @@
+const LIVE_SEARCH_LINE = 'When you need current or real-time information (weather, news, sports, stock prices, recent events), use the web search tool you have access to.';
+const NO_LIVE_LINE = 'You have no live internet access. For current or real-time information (today\u2019s weather, news, sports scores, stock prices, recent events), never make anything up \u2014 say you can\u2019t fetch live data and suggest the Gemini provider or the phone\u2019s weather/news apps.';
+
 const SYSTEM_PROMPT = [
   "You are E.V, a personal AI assistant living on the user's phone. You are modeled on the quick-witted, capable AI sidekicks of Spider-Man. You are the user's close, trusted companion.",
   'Personality: sharp, confident, friendly, techy, occasionally playful and dry-humored. Keep responses natural for spoken conversation: short, clear, no heavy formatting. Never break character.',
   'You have memory of facts about the user. Use those facts when relevant, but never recite them unprompted and never claim you just met them if you know them.',
-  'When you need current or real-time information (weather, news, sports, stock prices, recent events), use the web search tool you have access to.',
+  LIVE_SEARCH_LINE,
   'Anything marked [PRIVATE] is confidential and must never be repeated to anyone else or shared in responses.',
   'Be honest about your limits. If you cannot do something, say so briefly and suggest an alternative.'
 ].join('\n');
@@ -21,9 +24,16 @@ const GROQ_MODELS = [
   { id: 'llama-3.3-70b-versatile', vision: false },
   { id: 'llama-3.1-8b-instant', vision: false }
 ];
-/* The Free Models Router (openrouter/free) auto-picks a free model that supports the request's
-   features (vision included), so one entry stays resilient as the free list churns. */
+/* Pinned latest free models (verified live Aug 2026), quality-ordered. openrouter/free stays
+   as the last-resort entry so a request still works if a pinned free model gets delisted
+   (the free list churns often); sendToOpenRouter auto-skips unavailable models. */
 const OPENROUTER_MODELS = [
+  { id: 'nvidia/nemotron-3.5-lightning:free', vision: false },
+  { id: 'google/gemma-4-31b-it:free', vision: true },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', vision: false },
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', vision: false },
+  { id: 'google/gemma-4-26b-a4b-it:free', vision: true },
+  { id: 'openai/gpt-oss-20b:free', vision: false },
   { id: 'openrouter/free', vision: true }
 ];
 
@@ -111,7 +121,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v35';
+const APP_VERSION = 'v37';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -567,6 +577,10 @@ let activeModels = {
   groq: loadJSON(STORAGE.groqModel, 0),
   openrouter: loadJSON(STORAGE.openrouterModel, 0)
 };
+/* The concrete model OpenRouter actually answered with last (captured from the SSE stream).
+   For pinned :free models this matches the requested id; for openrouter/free it reveals the
+   real model so the chat tag never shows an opaque router name. */
+let lastOpenRouterModel = '';
 
 const OUTAGE_MS = 300000;
 let providerOut = {};
@@ -603,6 +617,10 @@ function clampModelIndex(list, index) {
 function getActiveModel(provider) {
   const list = modelList(provider);
   return list[clampModelIndex(list, activeModels[provider])].id;
+}
+
+function openRouterModelLabel() {
+  return lastOpenRouterModel || getActiveModel('openrouter');
 }
 
 function setActiveModel(provider, index) {
@@ -701,7 +719,9 @@ function visibleFacts(provider) {
 
 function buildSystem(provider) {
   const f = visibleFacts(provider);
-  let out = SYSTEM_PROMPT;
+  /* Gemini alone has live web grounding (googleSearch); Groq/OpenRouter must not pretend they
+     can fetch today's weather/news or they'll confidently answer from stale training data. */
+  let out = provider === 'gemini' ? SYSTEM_PROMPT : SYSTEM_PROMPT.replace(LIVE_SEARCH_LINE, NO_LIVE_LINE);
   if (conversationSummary) out += '\n\nEarlier conversation summary:\n' + conversationSummary;
   if (f.length) {
     const list = f.map((x) => '- ' + (x.sensitive ? '[PRIVATE] ' : '') + x.text).join('\n');
@@ -1015,6 +1035,7 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
 }
 
 async function sendToOpenRouter(messages, onToken, startIndex, maxTokens) {
+  lastOpenRouterModel = '';
   const start = typeof startIndex === 'number' && startIndex >= 0 && startIndex < OPENROUTER_MODELS.length
     ? startIndex
     : clampModelIndex(OPENROUTER_MODELS, activeModels.openrouter);
@@ -1095,6 +1116,7 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
   }
   try {
     await readSSE(res, (j) => {
+      if (j && typeof j.model === 'string' && j.model) lastOpenRouterModel = j.model;
       const d = j.choices && j.choices[0] && j.choices[0].delta;
       if (d && typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
@@ -1198,7 +1220,7 @@ function writeEvEntry(entryRef, entry) {
 
 function baseLabelFor(ctx) {
   if (ctx.provider === 'gemini') return 'gemini · ' + getActiveModel('gemini');
-  if (ctx.provider === 'openrouter') return 'openrouter' + (ctx.reason ? ' · ' + ctx.reason : '') + ' · ' + getActiveModel('openrouter');
+  if (ctx.provider === 'openrouter') return 'openrouter' + (ctx.reason ? ' · ' + ctx.reason : '') + ' · ' + openRouterModelLabel();
   return 'groq' + (ctx.reason ? ' · ' + ctx.reason : '') + ' · ' + getActiveModel('groq');
 }
 
@@ -1304,24 +1326,33 @@ let handsfreeSendTimer = 0;
 const HANDS_FREE_DELAY = 3000;
 const WAKE_RE = /^\s*(?:(?:hey there|hey|okay|ok|listen|yo)[,\s]+)?e[\s.]*v(?:ie|ee)?\b/i;
 const EXIT_RE = /\b(?:stop listening|exit hands[- ]?free|hands[- ]?free off|goodbye|good bye)\b/i;
+const SEND_NOW_RE = /\b(?:send now|send it|send this|send that|send message)\s*$/i;
 
 function stripWakePhrase(text) {
   return text.replace(WAKE_RE, ' ').trim();
 }
 
+function stripSendPhrase(text) {
+  return text.replace(SEND_NOW_RE, ' ').trim();
+}
+
+function flushHandsFreeBuffer() {
+  clearTimeout(handsfreeSendTimer);
+  handsfreeSendTimer = 0;
+  const text = handsFreeBuffer.trim();
+  handsFreeBuffer = '';
+  handsFreeLastSpeech = 0;
+  if (!text) return;
+  if (EXIT_RE.test(text)) { endHandsFreeSession(); return; }
+  const stripped = stripWakePhrase(text);
+  if (!stripped || stripped === text) return;
+  handleHandsFreeResult(text);
+}
+
 function scheduleHandsFreeSend() {
   if (handsfreeSendTimer) return;
-  handsfreeSendTimer = setTimeout(() => {
-    handsfreeSendTimer = 0;
-    const text = handsFreeBuffer.trim();
-    handsFreeBuffer = '';
-    handsFreeLastSpeech = 0;
-    if (!text) return;
-    if (EXIT_RE.test(text)) { endHandsFreeSession(); return; }
-    const stripped = stripWakePhrase(text);
-    if (!stripped || stripped === text) return;
-    handleHandsFreeResult(text);
-  }, Math.max(0, HANDS_FREE_DELAY - (Date.now() - handsFreeLastSpeech)));
+  if (SEND_NOW_RE.test(handsFreeBuffer)) { flushHandsFreeBuffer(); return; }
+  handsfreeSendTimer = setTimeout(flushHandsFreeBuffer, Math.max(0, HANDS_FREE_DELAY - (Date.now() - handsFreeLastSpeech)));
 }
 
 function startRecognition(mode) {
@@ -1412,7 +1443,7 @@ function handleHandsFreeResult(seg) {
   const value = (seg || '').trim();
   if (!value) return;
   if (EXIT_RE.test(value)) { endHandsFreeSession(); return; }
-  const stripped = stripWakePhrase(value);
+  const stripped = stripSendPhrase(stripWakePhrase(value));
   if (!stripped || stripped === value) return;
   handsFreePaused = true;
   if (recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
@@ -1736,7 +1767,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       }
       throw new Error(prevErr.message + ' \u2014 OpenRouter also failed: ' + orErr.message);
     }
-    markFallbackNote('openrouter · fallback · ' + getActiveModel('openrouter'), prevErr.message);
+    markFallbackNote('openrouter · fallback · ' + openRouterModelLabel(), prevErr.message);
     succeededProvider = 'openrouter';
     clearProviderOut('openrouter');
   };

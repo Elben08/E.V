@@ -19,9 +19,9 @@ A phone-first, Spider-Man-style AI assistant. Voice or text chat, real-time answ
 | Google Gemini (`gemini-3.5-flash`) | Main brain + live web search | ~1,500 req/day |
 | Groq (`openai/gpt-oss-120b`) | Private/sensitive route + auto-fallback | ~1,000 req/day |
 | Groq vision (`qwen/qwen3.6-27b`) | Reads attached images on the private route | same Groq quota |
-| OpenRouter (`openrouter/free`) | Third fallback + outage escape (text-only, non-sensitive) | varies by free model |
+| OpenRouter (latest `:free` models) | Third fallback + outage escape (text-only, non-sensitive) | varies by free model |
 
-> **Model resilience** — if the active model gets deprecated or becomes unavailable, E.V automatically switches to the next capable free-tier model. The active model is shown in the chat tag and in Settings, where you can reset any provider back to its default model. Settings → **Test connections** probes all candidate models and picks the best working one. When you attach a photo, E.V switches Groq to its vision model automatically. When a provider is out of free quota, E.V rotates to its next model (Gemini) or remembers the outage and routes around it for 5 minutes (OpenRouter is the final fallback).
+> **Model resilience** — if the active model gets deprecated or becomes unavailable, E.V automatically switches to the next capable free-tier model. The active model is shown in the chat tag and in Settings, where you can reset any provider back to its default model. OpenRouter chat tags show the exact free model that answered (it pins the latest strong free models like `nvidia/nemotron-3.5-lightning:free` and `google/gemma-4-31b-it:free`, with `openrouter/free` as a last-resort catch-all). Settings → **Test connections** probes all candidate models and picks the best working one. When you attach a photo, E.V switches Groq to its vision model automatically. When a provider is out of free quota, E.V rotates to its next model (Gemini) or remembers the outage and routes around it for 5 minutes (OpenRouter is the final fallback).
 
 ## Setup (one time, ~15 minutes)
 
@@ -29,7 +29,7 @@ A phone-first, Spider-Man-style AI assistant. Voice or text chat, real-time answ
 
 - **Gemini**: go to [aistudio.google.com](https://aistudio.google.com) → sign in with a Google account → **Get API key** → copy it (`AIza...`).
 - **Groq**: go to [console.groq.com](https://console.groq.com) → sign up → **API Keys** → **Create** → copy it (`gsk_...`).
-- **OpenRouter (optional)**: go to [openrouter.ai](https://openrouter.ai) → sign up → **Keys** → **Create Key** → copy it (`sk-or-v1-...`). Free models need no card. E.V uses it only as a third fallback for **text-only, non-sensitive** turns (free models may log/train on prompts).
+- **OpenRouter (optional)**: go to [openrouter.ai](https://openrouter.ai) → sign up → **Keys** → **Create Key** → copy it (`sk-or-v1-...`). Free models need no card. E.V uses it as a third fallback for **text-only, non-sensitive** turns (free models may log/train on prompts), or as the default provider if you choose "OpenRouter only". Groq/OpenRouter models have **no live internet** in E.V, so real-time questions like "today's weather" get an honest "can't fetch live data" instead of a made-up answer — use Gemini for live search.
 
 ### 2. Put E.V on the web (needed for voice on your phone)
 
@@ -56,7 +56,7 @@ In Chrome: menu (⋮) → **Add to Home screen**. E.V now has its own icon and f
 ## Using E.V
 
 - **Tap the reactor** → speak. E.V transcribes and replies out loud.
-- **Attach files (paperclip)** — pick one or more photos or PDFs, then send. Thumbnails appear above the input; tap **×** to remove. Photos work on the Gemini and Groq routes (Gemini natively, Groq via its vision model); PDFs only on Gemini. OpenRouter never receives attachments — it's text-only.
+- **Attach files (paperclip)** — pick one or more photos or PDFs, then send. Thumbnails appear above the input; tap **×** to remove. Photos work on the Gemini, Groq, and OpenRouter routes (OpenRouter via its pinned vision model `google/gemma-4-31b-it:free`); PDFs only on Gemini. The OpenRouter **auto-fallback** stays text-only.
 - **Settings (gear)** — API keys, default provider, privacy routing, voice on/off, and **Test connections** to diagnose each provider.
 - **Memory (book icon)** — see what E.V remembers; delete entries you don't want.
 - **Private session** — say *"this is private"* to route everything to Groq until you say *"private mode off"*.
@@ -117,7 +117,7 @@ Everything runs on-device and instant. Groq does not train on your data; Gemini 
 ## Known limits
 
 - **Free-tier caps** — Gemini and OpenRouter quotas reset daily (roughly midnight); Groq rolls per minute. E.V auto-rotates models, auto-retries rate limits, and remembers an out-of-quota provider for ~5 minutes. Settings → **Test connections** checks every provider at once.
-- **Tap-to-talk**, or **Hands-free mode** (Settings → on): tap the reactor to start a voice session, then just say "Hey E.V …". While listening, a fullscreen glowing-orb overlay shows your live transcript; tap it to stop (or say "stop listening" / "goodbye" to end a hands-free session). Browsers stop listening after ~1 minute, so E.V silently restarts the mic while the session is live. Needs Android Chrome, screen on, and microphone permission.
+- **Tap-to-talk**, or **Hands-free mode** (Settings → on): tap the reactor to start a voice session, then just say "Hey E.V …". While listening, a fullscreen glowing-orb overlay shows your live transcript; tap it to stop (or say "stop listening" / "goodbye" to end a hands-free session). Browsers stop listening after ~1 minute, so E.V silently restarts the mic while the session is live. End your message with "send now" (or "send it"/"send this"/"send that"/"send message") to send immediately instead of waiting for the silence timer. Needs Android Chrome, screen on, and microphone permission.
 - **Attachments** — images up to 7 MB each, PDFs up to 20 MB, max 5 files / 20 MB total. Files are read in-browser only and never stored; history keeps just a `[Attached file]` note. PDFs don't work on the Groq route, and attachments are kept out of private-mode history.
 - Deep control *inside* other apps (typing/swiping) needs a native Android app — a future upgrade.
 - API keys are stored on your device; treat this as a personal app, don't publish it publicly with your keys.
