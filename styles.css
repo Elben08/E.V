@@ -79,7 +79,7 @@ body::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.1;
+  opacity: 0.2;
 }
 .globe-svg {
   width: 520px;
