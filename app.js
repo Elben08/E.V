@@ -107,7 +107,8 @@ const STORAGE = {
   geminiModel: 'ev.geminiModel',
   groqModel: 'ev.groqModel',
   openrouterModel: 'ev.openrouterModel',
-  conversationSummary: 'ev.conversationSummary'
+  conversationSummary: 'ev.conversationSummary',
+  sessions: 'ev.sessions'
 };
 
 const DEFAULT_SETTINGS = {
@@ -121,7 +122,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v39';
+const APP_VERSION = 'v40';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -661,7 +662,10 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'openrouter-model-label', 'btn-reset-gemini', 'btn-reset-groq', 'btn-reset-openrouter',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new',
-  'voice-overlay', 'vo-transcript', 'vo-status'];
+  'voice-overlay', 'vo-transcript', 'vo-status',
+  'screen-dashboard', 'screen-chat', 'screen-voice',
+  'dash-greeting-text', 'dash-history-list', 'btn-ask-now',
+  'btn-back-chat', 'btn-back-voice', 'btn-exit-voice', 'reactor-screen'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
 const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday)\b/i;
@@ -1141,6 +1145,10 @@ function setReactor(state) {
   if (!settings.geminiKey && !settings.groqKey && !settings.openrouterKey) state = 'off';
   el.reactor.className = 'reactor' + (state ? ' ' + state : '');
   el.reactor.setAttribute('aria-pressed', state === 'listening' ? 'true' : 'false');
+  if (el['reactor-screen']) {
+    el['reactor-screen'].className = 'reactor reactor-screen-size' + (state ? ' ' + state : '');
+    el['reactor-screen'].setAttribute('aria-pressed', state === 'listening' ? 'true' : 'false');
+  }
 }
 
 function setVoiceOverlay(on, working) {
@@ -2153,10 +2161,102 @@ function openMemory() {
 
 const HELLO_MSG = 'Hey. E.V here, your personal AI. Type a message or tap the reactor to talk to me.';
 
+/* ---- Screen navigation ---- */
+let currentScreen = 'dashboard';
+
+function navigateTo(screen) {
+  if (screen === currentScreen) return;
+  const dash = el['screen-dashboard'];
+  const chat = el['screen-chat'];
+  const voice = el['screen-voice'];
+
+  /* slide out current */
+  if (currentScreen === 'dashboard') dash.classList.remove('screen--active');
+  else if (currentScreen === 'chat') { chat.classList.remove('screen--active'); chat.classList.add('screen--left'); }
+  else if (currentScreen === 'voice') { voice.classList.remove('screen--active'); voice.classList.add('screen--left'); stopVoiceScreenListening(); }
+
+  /* slide in target */
+  if (screen === 'dashboard') { dash.classList.remove('screen--left'); dash.classList.add('screen--active'); populateDashboard(); }
+  else if (screen === 'chat') { chat.classList.remove('screen--left'); chat.classList.add('screen--active'); setTimeout(() => { el['text-input'].focus(); }, 380); }
+  else if (screen === 'voice') { voice.classList.remove('screen--left'); voice.classList.add('screen--active'); startVoiceScreenListening(); }
+
+  currentScreen = screen;
+}
+
+function startVoiceScreenListening() {
+  if (!SR) { toast('Voice input is not supported in this browser.'); return; }
+  setTimeout(() => {
+    if (currentScreen === 'voice' && !busy && !listening && !handsFreeActive) {
+      if (settings.handsFree) startHandsFreeSession();
+      else startRecognition('ptt');
+    }
+  }, 400);
+}
+
+function stopVoiceScreenListening() {
+  if (listening && recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
+  if (handsFreeActive) { endHandsFreeSession(); }
+}
+
+/* ---- Session management ---- */
+function saveSession() {
+  if (!history.length) return;
+  const firstUser = history.find((h) => h.role === 'user');
+  const preview = firstUser ? firstUser.text.slice(0, 80) : 'Conversation';
+  const sessions = loadJSON(STORAGE.sessions, []);
+  sessions.push({ id: Date.now(), preview: preview, timestamp: Date.now(), history: JSON.parse(JSON.stringify(history)) });
+  if (sessions.length > 20) sessions.splice(0, sessions.length - 20);
+  saveJSON(STORAGE.sessions, sessions);
+}
+
+function loadSession(id) {
+  if (busy) return;
+  const sessions = loadJSON(STORAGE.sessions, []);
+  const session = sessions.find((s) => s.id === id);
+  if (!session) return;
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  history = JSON.parse(JSON.stringify(session.history));
+  saveJSON(STORAGE.history, history);
+  conversationSummary = '';
+  saveJSON(STORAGE.conversationSummary, conversationSummary);
+  lastSummaryLen = 0;
+  setPendingAttachments([]);
+  el.chat.innerHTML = '';
+  renderHistory();
+  navigateTo('chat');
+}
+
+/* ---- Dashboard ---- */
+function populateDashboard() {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
+  el['dash-greeting-text'].textContent = greeting;
+
+  const sessions = loadJSON(STORAGE.sessions, []);
+  const list = el['dash-history-list'];
+  list.innerHTML = '';
+  const recent = sessions.slice(-2).reverse();
+  recent.forEach((s) => {
+    const li = document.createElement('li');
+    li.className = 'dash-history-item';
+    const span = document.createElement('span');
+    span.className = 'dash-history-text';
+    span.textContent = s.preview;
+    const arrow = document.createElement('span');
+    arrow.className = 'dash-history-arrow';
+    arrow.textContent = '\u203a';
+    li.appendChild(span);
+    li.appendChild(arrow);
+    li.addEventListener('click', () => { loadSession(s.id); });
+    list.appendChild(li);
+  });
+}
+
 function startNewConversation() {
   if (busy) return;
   if (!window.confirm('Start a new conversation? The current chat will be cleared. Your saved memory and settings are kept.')) return;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
+  saveSession();
   history = [];
   saveJSON(STORAGE.history, history);
   conversationSummary = '';
@@ -2240,17 +2340,22 @@ function init() {
   el['modal-settings'].addEventListener('click', (e) => { if (e.target === el['modal-settings']) hide(el['modal-settings']); });
   el['modal-memory'].addEventListener('click', (e) => { if (e.target === el['modal-memory']) hide(el['modal-memory']); });
 
+  /* ---- Navigation ---- */
+  document.querySelectorAll('.dash-card[data-target]').forEach((card) => {
+    card.addEventListener('click', () => { navigateTo(card.dataset.target); });
+  });
+  el['btn-ask-now'].addEventListener('click', () => { navigateTo('chat'); });
+  el['btn-back-chat'].addEventListener('click', () => { navigateTo('dashboard'); });
+  el['btn-back-voice'].addEventListener('click', () => { navigateTo('dashboard'); });
+  el['btn-exit-voice'].addEventListener('click', () => { navigateTo('dashboard'); });
+  if (el['reactor-screen']) el['reactor-screen'].addEventListener('click', toggleListening);
+
   setReactor('');
-  if (!history.length) {
-    addMsg('ev', HELLO_MSG);
-    if (settings.voice) speak(HELLO_MSG);
-  } else {
-    renderHistory();
-    addMsg('ev', 'Welcome back.');
-  }
+  populateDashboard();
   const calendarEvent = parseCalendarFragment();
   if (calendarEvent) {
     renderCalendarResult(calendarEvent);
+    navigateTo('chat');
     if (calendarChannel) {
       try {
         calendarChannel.postMessage({ type: 'calendar', title: calendarEvent.title, date: calendarEvent.date, events: calendarEvent.events });

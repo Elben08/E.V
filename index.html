@@ -13,41 +13,214 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-name">E.V</span>
-      <span id="status-dot" class="status-dot"></span>
-      <span id="status-text" class="status-text">online</span>
-    </div>
-    <div class="topbar-actions">
-      <button id="btn-new" class="icon-btn" aria-label="New conversation">&#10133;</button>
-      <button id="btn-memory" class="icon-btn" aria-label="Memory">&#128214;</button>
-      <button id="btn-settings" class="icon-btn" aria-label="Settings">&#9881;</button>
-    </div>
-  </header>
 
-  <main id="chat" class="chat" aria-live="polite"></main>
+  <!-- Globe background (shared across all screens) -->
+  <div class="globe-bg" aria-hidden="true">
+    <svg viewBox="0 0 600 600" xmlns="http://www.w3.org/2000/svg" class="globe-svg">
+      <!-- Wireframe sphere -->
+      <g class="globe-sphere" opacity="0.6">
+        <!-- Horizontal rings -->
+        <ellipse cx="300" cy="300" rx="180" ry="60" fill="none" stroke="#39c6ff" stroke-width="0.7"/>
+        <ellipse cx="300" cy="300" rx="180" ry="120" fill="none" stroke="#39c6ff" stroke-width="0.5" transform="rotate(30 300 300)"/>
+        <ellipse cx="300" cy="300" rx="180" ry="150" fill="none" stroke="#39c6ff" stroke-width="0.4" transform="rotate(60 300 300)"/>
+        <ellipse cx="300" cy="300" rx="180" ry="180" fill="none" stroke="#39c6ff" stroke-width="0.6"/>
+        <ellipse cx="300" cy="300" rx="120" ry="180" fill="none" stroke="#39c6ff" stroke-width="0.4" transform="rotate(20 300 300)"/>
+        <ellipse cx="300" cy="300" rx="60" ry="180" fill="none" stroke="#39c6ff" stroke-width="0.3" transform="rotate(45 300 300)"/>
+        <!-- Nodes -->
+        <circle cx="300" cy="120" r="3" fill="#39c6ff" opacity="0.8"/>
+        <circle cx="300" cy="480" r="3" fill="#39c6ff" opacity="0.8"/>
+        <circle cx="120" cy="300" r="2.5" fill="#39c6ff" opacity="0.7"/>
+        <circle cx="480" cy="300" r="2.5" fill="#39c6ff" opacity="0.7"/>
+        <circle cx="180" cy="170" r="2" fill="#39c6ff" opacity="0.6"/>
+        <circle cx="420" cy="170" r="2" fill="#39c6ff" opacity="0.6"/>
+        <circle cx="180" cy="430" r="2" fill="#39c6ff" opacity="0.6"/>
+        <circle cx="420" cy="430" r="2" fill="#39c6ff" opacity="0.6"/>
+        <circle cx="140" cy="240" r="1.8" fill="#39c6ff" opacity="0.5"/>
+        <circle cx="460" cy="240" r="1.8" fill="#39c6ff" opacity="0.5"/>
+        <circle cx="140" cy="360" r="1.8" fill="#39c6ff" opacity="0.5"/>
+        <circle cx="460" cy="360" r="1.8" fill="#39c6ff" opacity="0.5"/>
+        <!-- Connecting lines -->
+        <line x1="300" y1="120" x2="180" y2="170" stroke="#39c6ff" stroke-width="0.5" opacity="0.4"/>
+        <line x1="300" y1="120" x2="420" y2="170" stroke="#39c6ff" stroke-width="0.5" opacity="0.4"/>
+        <line x1="180" y1="170" x2="120" y2="300" stroke="#39c6ff" stroke-width="0.5" opacity="0.35"/>
+        <line x1="420" y1="170" x2="480" y2="300" stroke="#39c6ff" stroke-width="0.5" opacity="0.35"/>
+        <line x1="120" y1="300" x2="180" y2="430" stroke="#39c6ff" stroke-width="0.5" opacity="0.35"/>
+        <line x1="480" y1="300" x2="420" y2="430" stroke="#39c6ff" stroke-width="0.5" opacity="0.35"/>
+        <line x1="180" y1="430" x2="300" y2="480" stroke="#39c6ff" stroke-width="0.5" opacity="0.4"/>
+        <line x1="420" y1="430" x2="300" y2="480" stroke="#39c6ff" stroke-width="0.5" opacity="0.4"/>
+        <line x1="180" y1="170" x2="420" y2="170" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="180" y1="430" x2="420" y2="430" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="140" y1="240" x2="180" y2="170" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="460" y1="240" x2="420" y2="170" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="140" y1="360" x2="180" y2="430" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="460" y1="360" x2="420" y2="430" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="140" y1="240" x2="120" y2="300" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="460" y1="240" x2="480" y2="300" stroke="#39c6ff" stroke-width="0.4" opacity="0.3"/>
+        <line x1="300" y1="120" x2="140" y2="240" stroke="#39c6ff" stroke-width="0.3" opacity="0.25"/>
+        <line x1="300" y1="120" x2="460" y2="240" stroke="#39c6ff" stroke-width="0.3" opacity="0.25"/>
+      </g>
+      <!-- HUD rings -->
+      <g class="globe-hud">
+        <circle cx="300" cy="300" r="210" fill="none" stroke="#39c6ff" stroke-width="0.8" stroke-dasharray="12 6" opacity="0.3"/>
+        <circle cx="300" cy="300" r="240" fill="none" stroke="#39c6ff" stroke-width="0.5" stroke-dasharray="4 8" opacity="0.2"/>
+        <circle cx="300" cy="300" r="260" fill="none" stroke="#39c6ff" stroke-width="0.4" opacity="0.15"/>
+        <!-- Segmented arcs -->
+        <path d="M300 60 A240 240 0 0 1 540 300" fill="none" stroke="#39c6ff" stroke-width="1.2" stroke-linecap="round" opacity="0.25"/>
+        <path d="M60 300 A240 240 0 0 1 300 540" fill="none" stroke="#39c6ff" stroke-width="1.2" stroke-linecap="round" opacity="0.25"/>
+        <!-- Tick marks -->
+        <line x1="300" y1="55" x2="300" y2="70" stroke="#39c6ff" stroke-width="0.8" opacity="0.3"/>
+        <line x1="545" y1="300" x2="530" y2="300" stroke="#39c6ff" stroke-width="0.8" opacity="0.3"/>
+        <line x1="300" y1="545" x2="300" y2="530" stroke="#39c6ff" stroke-width="0.8" opacity="0.3"/>
+        <line x1="55" y1="300" x2="70" y2="300" stroke="#39c6ff" stroke-width="0.8" opacity="0.3"/>
+      </g>
+      <!-- World map dots (simplified) -->
+      <g class="globe-map" opacity="0.15">
+        <!-- North America -->
+        <circle cx="160" cy="180" r="1.2" fill="#39c6ff"/><circle cx="170" cy="185" r="1" fill="#39c6ff"/>
+        <circle cx="155" cy="190" r="1.2" fill="#39c6ff"/><circle cx="165" cy="195" r="1" fill="#39c6ff"/>
+        <circle cx="150" cy="200" r="1" fill="#39c6ff"/><circle cx="175" cy="178" r="0.8" fill="#39c6ff"/>
+        <circle cx="145" cy="195" r="0.8" fill="#39c6ff"/><circle cx="180" cy="190" r="1" fill="#39c6ff"/>
+        <!-- South America -->
+        <circle cx="190" cy="320" r="1" fill="#39c6ff"/><circle cx="195" cy="330" r="1.2" fill="#39c6ff"/>
+        <circle cx="185" cy="340" r="1" fill="#39c6ff"/><circle cx="192" cy="350" r="0.8" fill="#39c6ff"/>
+        <circle cx="188" cy="310" r="0.8" fill="#39c6ff"/>
+        <!-- Europe -->
+        <circle cx="310" cy="175" r="1" fill="#39c6ff"/><circle cx="320" cy="180" r="1.2" fill="#39c6ff"/>
+        <circle cx="305" cy="185" r="0.8" fill="#39c6ff"/><circle cx="315" cy="170" r="1" fill="#39c6ff"/>
+        <!-- Africa -->
+        <circle cx="320" cy="260" r="1" fill="#39c6ff"/><circle cx="325" cy="270" r="1.2" fill="#39c6ff"/>
+        <circle cx="315" cy="280" r="1" fill="#39c6ff"/><circle cx="322" cy="290" r="0.8" fill="#39c6ff"/>
+        <circle cx="318" cy="250" r="0.8" fill="#39c6ff"/>
+        <!-- Asia -->
+        <circle cx="380" cy="190" r="1.2" fill="#39c6ff"/><circle cx="390" cy="195" r="1" fill="#39c6ff"/>
+        <circle cx="375" cy="200" r="1" fill="#39c6ff"/><circle cx="400" cy="188" r="0.8" fill="#39c6ff"/>
+        <circle cx="385" cy="210" r="1" fill="#39c6ff"/><circle cx="410" cy="200" r="0.8" fill="#39c6ff"/>
+        <!-- Australia -->
+        <circle cx="420" cy="340" r="1" fill="#39c6ff"/><circle cx="430" cy="345" r="1.2" fill="#39c6ff"/>
+        <circle cx="425" cy="335" r="0.8" fill="#39c6ff"/>
+      </g>
+      <!-- Accent elements -->
+      <g class="globe-accents" opacity="0.2">
+        <!-- Diagonal data lines -->
+        <line x1="350" y1="100" x2="400" y2="60" stroke="#39c6ff" stroke-width="0.6"/>
+        <line x1="395" y1="65" x2="400" y2="60" stroke="#39c6ff" stroke-width="0.6"/>
+        <line x1="400" y1="60" x2="405" y2="65" stroke="#39c6ff" stroke-width="0.6"/>
+        <!-- Bar graph -->
+        <rect x="440" y="380" width="4" height="16" fill="#39c6ff" opacity="0.4"/>
+        <rect x="448" y="374" width="4" height="22" fill="#39c6ff" opacity="0.5"/>
+        <rect x="456" y="382" width="4" height="14" fill="#39c6ff" opacity="0.35"/>
+        <rect x="464" y="370" width="4" height="26" fill="#39c6ff" opacity="0.55"/>
+        <!-- Gear -->
+        <circle cx="120" cy="440" r="10" fill="none" stroke="#39c6ff" stroke-width="0.6"/>
+        <circle cx="120" cy="440" r="5" fill="none" stroke="#39c6ff" stroke-width="0.4"/>
+        <line x1="120" y1="428" x2="120" y2="432" stroke="#39c6ff" stroke-width="0.5"/>
+        <line x1="120" y1="448" x2="120" y2="452" stroke="#39c6ff" stroke-width="0.5"/>
+        <line x1="108" y1="440" x2="112" y2="440" stroke="#39c6ff" stroke-width="0.5"/>
+        <line x1="128" y1="440" x2="132" y2="440" stroke="#39c6ff" stroke-width="0.5"/>
+      </g>
+    </svg>
+  </div>
 
-  <footer class="inputbar">
-    <div id="attach-tray" class="attach-tray hidden"></div>
-    <div class="input-row">
-      <button id="btn-attach" class="icon-btn" aria-label="Attach file">&#128206;</button>
-      <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" multiple class="hidden">
-      <input id="text-input" type="text" placeholder="Type or tap the arc reactor to speak..." autocomplete="off" enterkeyhint="send">
-      <button id="btn-send" class="icon-btn send-btn" aria-label="Send">&#10148;</button>
-      <div id="reactor-wrap" class="reactor-wrap">
-        <div id="reactor" class="reactor" role="button" aria-label="Talk to E.V" aria-pressed="false">
-          <div class="reactor-core"></div>
-          <div class="reactor-ring ring-1"></div>
-          <div class="reactor-ring ring-2"></div>
-          <div class="reactor-ring ring-3"></div>
-          <div class="reactor-ring ring-4"></div>
-          <div class="reactor-mic">&#9835;</div>
+  <!-- ==================== SCREEN: Dashboard ==================== -->
+  <div id="screen-dashboard" class="screen screen--active">
+    <header class="dash-top">
+      <div class="dash-greeting">
+        <span class="dash-robot">&#129302;</span>
+        <span id="dash-greeting-text">Good Morning</span>
+      </div>
+    </header>
+    <main class="dash-body">
+      <h1 class="dash-heading">How Can I Assist You Today?</h1>
+      <div class="dash-cards">
+        <div class="dash-card" data-target="chat" role="button" tabindex="0">
+          <span class="dash-card-icon">&#128172;</span>
+          <h3>Chat with bot</h3>
+          <p>Chat for instant answers and smart assistance.</p>
+        </div>
+        <div class="dash-card" data-target="voice" role="button" tabindex="0">
+          <span class="dash-card-icon">&#127908;</span>
+          <h3>Talk with bot</h3>
+          <p>Talk with an intelligent AI assistant.</p>
         </div>
       </div>
-    </div>
-  </footer>
+      <button id="btn-ask-now" class="btn btn-primary dash-ask-btn">Ask now</button>
+      <section class="dash-history">
+        <div class="dash-history-header">
+          <h2>History</h2>
+        </div>
+        <ul id="dash-history-list" class="dash-history-list"></ul>
+      </section>
+    </main>
+  </div>
 
+  <!-- ==================== SCREEN: Chat ==================== -->
+  <div id="screen-chat" class="screen">
+    <header class="topbar">
+      <div class="brand">
+        <button id="btn-back-chat" class="icon-btn" aria-label="Back">&#8592;</button>
+        <span class="brand-name">E.V</span>
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-text" class="status-text">online</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-new" class="icon-btn" aria-label="New conversation">&#10133;</button>
+        <button id="btn-memory" class="icon-btn" aria-label="Memory">&#128214;</button>
+        <button id="btn-settings" class="icon-btn" aria-label="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <main id="chat" class="chat" aria-live="polite"></main>
+
+    <footer class="inputbar">
+      <div id="attach-tray" class="attach-tray hidden"></div>
+      <div class="input-row">
+        <button id="btn-attach" class="icon-btn" aria-label="Attach file">&#128206;</button>
+        <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" multiple class="hidden">
+        <input id="text-input" type="text" placeholder="Type or tap the arc reactor to speak..." autocomplete="off" enterkeyhint="send">
+        <button id="btn-send" class="icon-btn send-btn" aria-label="Send">&#10148;</button>
+        <div id="reactor-wrap" class="reactor-wrap">
+          <div id="reactor" class="reactor" role="button" aria-label="Talk to E.V" aria-pressed="false">
+            <div class="reactor-core"></div>
+            <div class="reactor-ring ring-1"></div>
+            <div class="reactor-ring ring-2"></div>
+            <div class="reactor-ring ring-3"></div>
+            <div class="reactor-ring ring-4"></div>
+            <div class="reactor-mic">&#9835;</div>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ==================== SCREEN: Voice ==================== -->
+  <div id="screen-voice" class="screen">
+    <header class="vo-screen-header">
+      <button id="btn-back-voice" class="icon-btn" aria-label="Back">&#8592;</button>
+      <span class="vo-screen-title">Talk to AI</span>
+      <span class="vo-screen-spacer"></span>
+    </header>
+    <main class="vo-screen-body">
+      <p class="vo-screen-subtitle">Go ahead, I'm listening&#8230;</p>
+      <div class="vo-wave-screen">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <p class="vo-screen-prompt">I am here to assist you with anything today.</p>
+    </main>
+    <footer class="vo-screen-footer">
+      <div id="reactor-screen" class="reactor reactor-screen-size" role="button" aria-label="Talk to E.V" aria-pressed="false">
+        <div class="reactor-core"></div>
+        <div class="reactor-ring ring-1"></div>
+        <div class="reactor-ring ring-2"></div>
+        <div class="reactor-ring ring-3"></div>
+        <div class="reactor-ring ring-4"></div>
+        <div class="reactor-mic">&#9835;</div>
+      </div>
+      <button id="btn-exit-voice" class="icon-btn" aria-label="Close">&#10005;</button>
+    </footer>
+  </div>
+
+  <!-- ==================== Voice overlay (PTT / hands-free) ==================== -->
   <div id="voice-overlay" class="voice-overlay hidden" role="status" aria-live="polite">
     <div class="vo-header"><span class="vo-brand">E.V</span></div>
     <div class="vo-center">
@@ -65,6 +238,7 @@
     </div>
   </div>
 
+  <!-- ==================== Modals ==================== -->
   <div id="modal-settings" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="modal-card">
       <h2 id="settings-title">E.V Settings</h2>
