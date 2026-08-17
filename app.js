@@ -2178,7 +2178,7 @@ function navigateTo(screen) {
 
   /* slide out current */
   if (currentScreen === 'dashboard') dash.classList.remove('screen--active');
-  else if (currentScreen === 'chat') { chat.classList.remove('screen--active'); chat.classList.add('screen--left'); }
+  else if (currentScreen === 'chat') { chat.classList.remove('screen--active'); chat.classList.add('screen--left'); saveSession(); }
   else if (currentScreen === 'voice') { voice.classList.remove('screen--active'); voice.classList.add('screen--left'); stopVoiceScreenListening(); }
 
   /* slide in target */
@@ -2322,7 +2322,7 @@ function init() {
     handleFileInput(el['file-input'].files);
     el['file-input'].value = '';
   });
-  window.addEventListener('beforeunload', () => { if (pendingAttachments.length) setPendingAttachments([]); });
+  window.addEventListener('beforeunload', () => { saveSession(); if (pendingAttachments.length) setPendingAttachments([]); });
   el['btn-settings'].addEventListener('click', openSettings);
   el['btn-settings-save'].addEventListener('click', saveSettingsForm);
   el['btn-settings-cancel'].addEventListener('click', () => hide(el['modal-settings']));
