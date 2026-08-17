@@ -121,7 +121,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v37';
+const APP_VERSION = 'v38';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1811,6 +1811,16 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           }
         }
         if (err.tooLarge || isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
+          /* Groq 8K TPM too small: try OpenRouter before giving up (text-only, non-sensitive) */
+          if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
+            try {
+              await fallbackToOpenRouter(geminiErr);
+              return;
+            } catch (orErr) {
+              if (orErr.bothRateLimited) throw orErr;
+              throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit), and OpenRouter also failed: ' + orErr.message);
+            }
+          }
           throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         }
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
@@ -1873,9 +1883,21 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         await autoRetryRateLimit(err);
         return;
       }
-      failThis(isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG
-        ? 'Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.'
-        : err.message);
+      if (isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
+        if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasImage && !curHasPdf) {
+          try {
+            await fallbackToOpenRouter(err);
+            return;
+          } catch (orErr) {
+            if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
+            failThis(orErr.message);
+            return;
+          }
+        }
+        failThis('Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
+        return;
+      }
+      failThis(err.message);
       return;
     }
     succeededProvider = 'groq';
