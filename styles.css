@@ -36,18 +36,16 @@ html, body {
 }
 
 body {
-  display: flex;
-  flex-direction: column;
+  height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  position: relative;
 }
 
 /* --- Holographic background layers --- */
 body::before {
   content: '';
   position: fixed;
-  inset: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   pointer-events: none;
   z-index: 0;
   background:
@@ -59,7 +57,7 @@ body::before {
 body::after {
   content: '';
   position: fixed;
-  inset: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   pointer-events: none;
   z-index: 0;
   background: repeating-linear-gradient(
@@ -75,7 +73,7 @@ body::after {
 /* ---------- Globe background ---------- */
 .globe-bg {
   position: fixed;
-  inset: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   z-index: 0;
   pointer-events: none;
   display: flex;
@@ -92,12 +90,17 @@ body::after {
 /* ---------- Screen container system ---------- */
 .screen {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100vh;
+  height: 100dvh;
   transform: translateX(100%);
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   overflow-y: auto;
   z-index: 1;
-  background: transparent;
+  background: var(--bg);
 }
 .screen--active { transform: translateX(0); }
 .screen--left { transform: translateX(-100%); }
@@ -485,7 +488,8 @@ body::after {
 /* ---------- Voice overlay (PTT / hands-free) ---------- */
 .voice-overlay {
   position: fixed;
-  inset: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
+  height: 100vh; height: 100dvh;
   z-index: 45;
   display: flex;
   flex-direction: column;
@@ -921,7 +925,8 @@ body::after {
 /* ---------- Modals ---------- */
 .modal {
   position: fixed;
-  inset: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
+  height: 100vh; height: 100dvh;
   background: rgba(4, 6, 12, 0.8);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
