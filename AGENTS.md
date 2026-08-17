@@ -44,4 +44,5 @@ Estimate is `Math.ceil(text.length / 4)`, which undercounts real Groq tokens by 
 
 - No semicolon-free style; code follows existing compact idioms with `/* ... */` inline comments.
 - UI glyphs are HTML entities (`&#10133;`), not raw emoji. `styles.css` is the only styling file; there is a `max-width: 380px` narrow-screen media query and `#text-input { min-width: 0 }` that must stay (reactor clipping regression).
+- Primary font is Google Fonts `Exo 2` (loaded via `<link>` in `index.html` head); theme is holographic/dark-navy with cyan glow, glassmorphism panels, scan-line background. Keep the `--cyan`/`--pink`/`--glass` CSS variable palette when tweaking.
 - User-facing docs live in `README.md` (setup, phone commands, MacroDroid macros, privacy model).
