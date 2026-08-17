@@ -100,7 +100,7 @@ body::after {
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   overflow-y: auto;
   z-index: 1;
-  background: var(--bg);
+  background: transparent;
 }
 .screen--active { transform: translateX(0); }
 .screen--left { transform: translateX(-100%); }
