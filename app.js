@@ -1,4 +1,4 @@
-const LIVE_SEARCH_LINE = 'When you need current or real-time information (weather, news, sports, stock prices, recent events), use the web search tool you have access to.';
+const LIVE_SEARCH_LINE = 'You have access to a googleSearch tool that can search the web in real time. For ANY query that involves current, real-time, or factual information (weather, news, sports scores, stock prices, oil prices, exchange rates, recent events, prices, forecasts, statistics, etc.), you MUST use the googleSearch tool. Never say you don\'t have internet access or can\'t look things up — you CAN and MUST use googleSearch for these queries. Only say you lack internet if you genuinely were not given the tool in this request.';
 const NO_LIVE_LINE = 'You have no live internet access. For current or real-time information (today\u2019s weather, news, sports scores, stock prices, recent events), never make anything up \u2014 say you can\u2019t fetch live data and suggest the Gemini provider or the phone\u2019s weather/news apps.';
 
 const SYSTEM_PROMPT = [
@@ -674,7 +674,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'btn-back-chat', 'btn-back-voice', 'btn-exit-voice', 'reactor-screen'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
-const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday)\b/i;
+const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday|look up|look up for|find out|search for|how much|what(?:'s| is| are) the .*(?:price|rate|cost|exchange)|oil price|gas price|fuel price|exchange rate|forex|currency|interest rate|inflation|GDP|population|unemployment|forecast for|prediction|outlook)\b/i;
 
 function needsLiveInfo(text) {
   return LIVE_INFO_RE.test(text);
@@ -923,12 +923,14 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
         continue;
       }
       lastErr = e;
+      /* When liveInfo is true, keep tools (googleSearch) — don't strip them in recovery,
+         otherwise the model loses web search and falls back to "I have no internet" answers. */
       if (!isModelUnavailable(e.message)) {
         let recovered = false;
         let dailyHit = false;
         for (let r = 0; r < 3 && !recovered; r++) {
           try {
-            await attempt(model, 'generateContent', false);
+            await attempt(model, 'generateContent', liveInfo);
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
