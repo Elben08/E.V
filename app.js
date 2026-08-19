@@ -1036,7 +1036,8 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
   try {
     await readSSE(res, (j) => {
       const d = j.choices && j.choices[0] && j.choices[0].delta;
-      if (d && typeof d.content === 'string' && d.content) onToken(d.content);
+      if (!d || d.reasoning_content) return;
+      if (typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
       throw new Error((err && err.message) || 'Groq stream error');
     });
@@ -1130,7 +1131,8 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
     await readSSE(res, (j) => {
       if (j && typeof j.model === 'string' && j.model) lastOpenRouterModel = j.model;
       const d = j.choices && j.choices[0] && j.choices[0].delta;
-      if (d && typeof d.content === 'string' && d.content) onToken(d.content);
+      if (!d || d.reasoning_content) return;
+      if (typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
       throw new Error((err && err.message) || 'OpenRouter stream error');
     });
@@ -1740,8 +1742,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   const token = (chunk) => {
     if (typeof chunk !== 'string') return;
     reply += chunk;
-    bodyEl.textContent = reply;
-    if (handsFreeActive) updateVoiceTranscript(reply);
+    const display = reply.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+    bodyEl.textContent = display || reply;
+    if (handsFreeActive) updateVoiceTranscript(display || reply);
     scrollChat();
   };
   const groqStart = () => (attachments.length ? firstVisionIndex('groq') : undefined);
