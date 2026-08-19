@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v46';
+const APP_VERSION = 'v47';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
