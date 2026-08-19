@@ -725,6 +725,9 @@ body::after {
   align-items: center;
   max-width: 440px;
   margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .dash-heading {
