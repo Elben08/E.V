@@ -816,7 +816,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     systemInstruction: { parts: [{ text: buildSystem('gemini') }] },
     generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
   };
-  if (liveInfo) body.tools = [{ googleSearch: {} }];
+  if (liveInfo) body.tools = [{ google_search: {} }];
 
   const geminiError = async (res) => {
     let msg = 'HTTP ' + res.status;
