@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v44';
+const APP_VERSION = 'v45';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -710,14 +710,11 @@ function chooseProvider(analysis, text) {
     return { provider: 'openrouter', reason: 'settings' };
   }
   const priv = settings.privacy;
-  if (priv === 'groq') {
-    if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
-    return { provider: 'groq', reason: 'policy' };
-  }
+  if (priv === 'groq') return { provider: 'groq', reason: 'policy' };
   if (priv === 'auto' && analysis.sensitive) return { provider: 'groq', reason: 'sensitive' };
   if (priv === 'auto' && privateMode) return { provider: 'groq', reason: 'private' };
   if (priv === 'manual' && (analysis.private || privateMode)) return { provider: 'groq', reason: 'private' };
-  /* live-info queries prefer Gemini when available */
+  /* live-info queries prefer Gemini when available (must not bypass privacy policy above) */
   if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
   /* auto: route around providers known to be out this session */
   if (isProviderOut('gemini') && groqOk) return { provider: 'groq', reason: 'gemini-out' };
