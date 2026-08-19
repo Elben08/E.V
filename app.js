@@ -1342,7 +1342,7 @@ let handsfreeSendTimer = 0;
 const HANDS_FREE_DELAY = 3000;
 const WAKE_RE = /^\s*(?:(?:hey there|hey|okay|ok|listen|yo)[,\s]+)?e[\s.]*v(?:ie|ee)?\b/i;
 const EXIT_RE = /\b(?:stop listening|exit hands[- ]?free|hands[- ]?free off|goodbye|good bye)\b/i;
-const SEND_NOW_RE = /\b(?:send now|send it|send this|send that|send message)\s*$/i;
+const SEND_NOW_RE = /\b(?:send now|send it|send this|send that|send message)[.,!?;:]*\s*$/i;
 
 function stripWakePhrase(text) {
   return text.replace(WAKE_RE, ' ').trim();
@@ -1360,14 +1360,12 @@ function flushHandsFreeBuffer() {
   handsFreeLastSpeech = 0;
   if (!text) return;
   if (EXIT_RE.test(text)) { endHandsFreeSession(); return; }
-  const stripped = stripWakePhrase(text);
-  if (!stripped || stripped === text) return;
   handleHandsFreeResult(text);
 }
 
 function scheduleHandsFreeSend() {
-  if (handsfreeSendTimer) return;
   if (SEND_NOW_RE.test(handsFreeBuffer)) { flushHandsFreeBuffer(); return; }
+  if (handsfreeSendTimer) return;
   handsfreeSendTimer = setTimeout(flushHandsFreeBuffer, Math.max(0, HANDS_FREE_DELAY - (Date.now() - handsFreeLastSpeech)));
 }
 
