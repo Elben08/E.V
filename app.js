@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v54';
+const APP_VERSION = 'v55';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -2424,10 +2424,10 @@ function init() {
   el['btn-reset-gemini'].addEventListener('click', () => resetModel('gemini'));
   el['btn-reset-groq'].addEventListener('click', () => resetModel('groq'));
   el['btn-reset-openrouter'].addEventListener('click', () => resetModel('openrouter'));
-  el['btn-memory'].addEventListener('click', openMemory);
+  if (el['btn-memory']) el['btn-memory'].addEventListener('click', openMemory);
   el['btn-new'].addEventListener('click', startNewConversation);
-  el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
-  el['btn-memory-clear'].addEventListener('click', () => {
+  if (el['btn-memory-close']) el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
+  if (el['btn-memory-clear']) el['btn-memory-clear'].addEventListener('click', () => {
     facts = [];
     saveJSON(STORAGE.facts, facts);
     renderMemoryList();
