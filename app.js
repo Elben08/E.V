@@ -1844,7 +1844,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           if (settings.geminiKey && !curHasPdf && !curHasImage) {
             try {
               const geminiParts2 = [];
-              await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts2.push(t), false, true);
+              await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts2.push(t), true, true);
               const cleaned = geminiParts2.join('').trim();
               if (cleaned) {
                 token(cleaned);
@@ -1867,9 +1867,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   };
 
   if (ctx.provider === 'gemini') {
-    const useLive = needsLiveInfo(ctx.userText) && !attachments.length;
     try {
-      await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, useLive);
+      await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, true);
       succeededProvider = 'gemini';
       clearProviderOut('gemini');
     } catch (err) {
@@ -1931,7 +1930,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         if (settings.geminiKey && !curHasImage && !curHasPdf) {
           try {
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts.push(t), false, true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts.push(t), true, true);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
