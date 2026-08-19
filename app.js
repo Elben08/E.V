@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v48';
+const APP_VERSION = 'v49';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -2317,7 +2317,7 @@ function populateDashboard() {
   const sessions = loadJSON(STORAGE.sessions, []);
   const list = el['dash-history-list'];
   list.innerHTML = '';
-  const recent = sessions.slice(-2).reverse();
+  const recent = historyEditMode ? sessions.slice().reverse() : sessions.slice(-2).reverse();
   recent.forEach((s) => {
     const li = document.createElement('li');
     li.className = 'dash-history-item' + (historyEditMode ? ' editing' : '') + (historySelected.has(s.id) ? ' selected' : '');
