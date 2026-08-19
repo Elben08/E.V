@@ -99,7 +99,8 @@ body::after {
   height: 100dvh;
   transform: translateX(100%);
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  z-index: 1;
+  overflow-y: auto;
+  z-index: 3;
   background: transparent;
   display: flex;
   flex-direction: column;
