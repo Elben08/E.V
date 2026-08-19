@@ -99,9 +99,11 @@ body::after {
   height: 100dvh;
   transform: translateX(100%);
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow-y: auto;
+  overflow: hidden;
   z-index: 1;
   background: transparent;
+  display: flex;
+  flex-direction: column;
 }
 .screen--active { transform: translateX(0); }
 .screen--left { transform: translateX(-100%); }
@@ -119,6 +121,7 @@ body::after {
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));
   box-shadow: 0 1px 20px rgba(57, 198, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .brand { display: flex; align-items: center; gap: 10px; }
@@ -173,6 +176,7 @@ body::after {
   position: relative;
   z-index: 1;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 18px 16px 8px;
   display: flex;
@@ -289,6 +293,7 @@ body::after {
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));
   box-shadow: 0 -1px 20px rgba(57, 198, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .input-row {
