@@ -679,6 +679,10 @@ body::after {
   letter-spacing: 0.5px;
 }
 
+.dash-settings {
+  margin-left: auto;
+}
+
 .dash-body {
   padding: 28px 20px 40px;
   display: flex;
