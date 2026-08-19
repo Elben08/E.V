@@ -1,4 +1,4 @@
-const LIVE_SEARCH_LINE = 'You have access to a googleSearch tool that can search the web in real time. For ANY query that involves current, real-time, or factual information (weather, news, sports scores, stock prices, oil prices, exchange rates, recent events, prices, forecasts, statistics, etc.), you MUST use the googleSearch tool. Never say you don\'t have internet access or can\'t look things up — you CAN and MUST use googleSearch for these queries. Only say you lack internet if you genuinely were not given the tool in this request.';
+const LIVE_SEARCH_LINE = 'You have access to a google_search tool that can search the web in real time. For ANY query that involves current, real-time, or factual information (weather, news, sports scores, stock prices, oil prices, exchange rates, recent events, prices, forecasts, statistics, etc.), you MUST use the google_search tool. Never say you don\'t have internet access or can\'t look things up — you CAN and MUST use google_search for these queries. Only say you lack internet if you genuinely were not given the tool in this request.';
 const NO_LIVE_LINE = 'You have no live internet access. For current or real-time information (today\u2019s weather, news, sports scores, stock prices, recent events), never make anything up \u2014 say you can\u2019t fetch live data and suggest the Gemini provider or the phone\u2019s weather/news apps.';
 
 const SYSTEM_PROMPT = [
@@ -894,7 +894,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     for (let t = 1; t <= 3; t++) {
       await sleep(3000 * t);
       try {
-        await attempt(model, 'streamGenerateContent?alt=sse', false);
+        await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
         return true;
       } catch (e2) {
         if (!e2.rateLimited) return false;
