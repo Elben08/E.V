@@ -661,18 +661,7 @@ body::after {
   border-bottom: 1px solid rgba(57, 198, 255, 0.12);
 }
 
-.dash-greeting {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.dash-robot {
-  font-size: 28px;
-  line-height: 1;
-}
-
-.dash-greeting-text {
+#dash-greeting-text {
   font-size: 16px;
   font-weight: 500;
   color: var(--text);
@@ -681,6 +670,47 @@ body::after {
 
 .dash-settings {
   margin-left: auto;
+}
+
+/* Chatbot greeting */
+.dash-bot-greeting {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.dash-bot-avatar {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(57, 198, 255, 0.35));
+}
+.dash-bot-bubble {
+  position: relative;
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid rgba(57, 198, 255, 0.18);
+  border-radius: 16px 16px 16px 4px;
+  padding: 12px 18px;
+  max-width: 280px;
+  box-shadow: 0 0 18px rgba(57, 198, 255, 0.08);
+}
+.dash-bot-bubble::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: -8px;
+  border: 6px solid transparent;
+  border-right-color: rgba(57, 198, 255, 0.18);
+}
+.dash-bot-bubble::after {
+  content: '';
+  position: absolute;
+  top: 15px;
+  left: -5px;
+  border: 5px solid transparent;
+  border-right-color: var(--glass);
 }
 
 .dash-body {
