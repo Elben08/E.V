@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v42';
+const APP_VERSION = 'v43';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -816,7 +816,10 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     systemInstruction: { parts: [{ text: buildSystem('gemini') }] },
     generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
   };
-  if (liveInfo) body.tools = [{ google_search: {} }];
+  if (liveInfo) {
+    body.tools = [{ google_search: {} }];
+    body.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+  }
 
   const geminiError = async (res) => {
     let msg = 'HTTP ' + res.status;
