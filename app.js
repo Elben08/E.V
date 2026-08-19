@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v40';
+const APP_VERSION = 'v42';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1245,11 +1245,13 @@ function baseLabelFor(ctx) {
 async function retryHistoryEntry(bubble, index) {
   const h = history[index];
   if (!h || !h.failed) return;
-  const prov = h.retryProvider || (h.provider && h.provider.indexOf('gemini') === 0 ? 'gemini' : h.provider && h.provider.indexOf('openrouter') === 0 ? 'openrouter' : 'groq');
+  const text = h.retryUserText || h.text;
+  const analysis = analyzeSensitivity(text);
+  const { provider, reason } = chooseProvider(analysis);
   await performReply(bubble, {
-    userText: h.retryUserText || h.text,
-    provider: prov,
-    reason: h.retryReason || '',
+    userText: text,
+    provider: provider,
+    reason: reason,
     sensitive: !!h.sensitive,
     attachments: [],
     entryRef: index
@@ -1838,6 +1840,20 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit), and OpenRouter also failed: ' + orErr.message);
             }
           }
+          /* Last resort: retry Gemini (it has no 8K TPM limit; previous Gemini failure may have been rate-limit, not size) */
+          if (settings.geminiKey && !curHasPdf && !curHasImage) {
+            try {
+              const geminiParts2 = [];
+              await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts2.push(t), false, true);
+              const cleaned = geminiParts2.join('').trim();
+              if (cleaned) {
+                token(cleaned);
+                markFallbackNote('gemini \u00b7 fallback', 'Groq can\u2019t fit this request \u2014 answered by Gemini instead');
+                succeededProvider = 'gemini';
+                return;
+              }
+            } catch (_) { /* fall through to error */ }
+          }
           throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         }
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
@@ -1910,6 +1926,20 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             failThis(orErr.message);
             return;
           }
+        }
+        /* Last resort: Gemini has no 8K TPM limit and doesn't train on data */
+        if (settings.geminiKey && !curHasImage && !curHasPdf) {
+          try {
+            const geminiParts = [];
+            await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts.push(t), false, true);
+            const cleaned = geminiParts.join('').trim();
+            if (cleaned) {
+              token(cleaned);
+              markFallbackNote('gemini \u00b7 fallback', 'Groq can\u2019t fit this request \u2014 answered by Gemini instead');
+              succeededProvider = 'gemini';
+              return;
+            }
+          } catch (_) { /* fall through to error */ }
         }
         failThis('Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         return;
