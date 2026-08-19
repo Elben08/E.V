@@ -852,6 +852,57 @@ body::after {
 }
 .dash-history-item:hover .dash-history-arrow { color: var(--cyan); }
 
+.btn-history-action {
+  background: none;
+  border: none;
+  color: var(--cyan);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.2s, color 0.2s;
+}
+.btn-history-action:hover { background: rgba(57, 198, 255, 0.1); }
+.btn-history-delete { color: #ff5c5c; }
+.btn-history-delete:hover { background: rgba(255, 92, 92, 0.1); }
+
+.dash-history-item.editing {
+  cursor: default;
+  gap: 10px;
+}
+.dash-history-item .hist-check {
+  display: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--muted);
+  border-radius: 4px;
+  flex-shrink: 0;
+  position: relative;
+  transition: border-color 0.2s, background 0.2s;
+}
+.dash-history-item.editing .hist-check { display: block; }
+.dash-history-item.editing .dash-history-arrow { display: none; }
+.dash-history-item.selected .hist-check {
+  border-color: var(--cyan);
+  background: var(--cyan);
+}
+.dash-history-item.selected .hist-check::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid #0a1a2a;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.dash-history-item.selected {
+  border-color: rgba(57, 198, 255, 0.4);
+  background: rgba(57, 198, 255, 0.08);
+}
+
 /* ---------- Voice screen ---------- */
 .vo-screen-header {
   position: sticky;

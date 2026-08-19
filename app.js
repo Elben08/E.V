@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v47';
+const APP_VERSION = 'v48';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -671,6 +671,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'voice-overlay', 'vo-transcript', 'vo-status',
   'screen-dashboard', 'screen-chat', 'screen-voice',
   'dash-greeting-text', 'dash-history-list', 'btn-ask-now',
+  'btn-history-edit', 'btn-history-delete', 'btn-history-cancel',
   'btn-back-chat', 'btn-back-voice', 'btn-exit-voice', 'reactor-screen'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
@@ -2277,10 +2278,41 @@ function loadSession(id) {
 }
 
 /* ---- Dashboard ---- */
+let historyEditMode = false;
+let historySelected = new Set();
+
+function toggleHistoryEdit() {
+  historyEditMode = !historyEditMode;
+  historySelected.clear();
+  el['btn-history-edit'].style.display = historyEditMode ? 'none' : '';
+  el['btn-history-delete'].style.display = historyEditMode ? '' : 'none';
+  el['btn-history-cancel'].style.display = historyEditMode ? '' : 'none';
+  populateDashboard();
+}
+
+function deleteSelectedSessions() {
+  if (!historySelected.size) return;
+  if (!window.confirm('Delete ' + historySelected.size + ' conversation' + (historySelected.size > 1 ? 's' : '') + '?')) return;
+  let sessions = loadJSON(STORAGE.sessions, []);
+  sessions = sessions.filter((s) => !historySelected.has(s.id));
+  saveJSON(STORAGE.sessions, sessions);
+  historyEditMode = false;
+  historySelected.clear();
+  el['btn-history-edit'].style.display = '';
+  el['btn-history-delete'].style.display = 'none';
+  el['btn-history-cancel'].style.display = 'none';
+  populateDashboard();
+  toast('Deleted.');
+}
+
 function populateDashboard() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
   el['dash-greeting-text'].textContent = greeting;
+
+  el['btn-history-edit'].style.display = historyEditMode ? 'none' : '';
+  el['btn-history-delete'].style.display = historyEditMode ? '' : 'none';
+  el['btn-history-cancel'].style.display = historyEditMode ? '' : 'none';
 
   const sessions = loadJSON(STORAGE.sessions, []);
   const list = el['dash-history-list'];
@@ -2288,18 +2320,31 @@ function populateDashboard() {
   const recent = sessions.slice(-2).reverse();
   recent.forEach((s) => {
     const li = document.createElement('li');
-    li.className = 'dash-history-item';
+    li.className = 'dash-history-item' + (historyEditMode ? ' editing' : '') + (historySelected.has(s.id) ? ' selected' : '');
+    const check = document.createElement('span');
+    check.className = 'hist-check';
     const span = document.createElement('span');
     span.className = 'dash-history-text';
     span.textContent = s.preview;
     const arrow = document.createElement('span');
     arrow.className = 'dash-history-arrow';
     arrow.textContent = '\u203a';
+    li.appendChild(check);
     li.appendChild(span);
     li.appendChild(arrow);
-    li.addEventListener('click', () => { loadSession(s.id); });
+    li.addEventListener('click', () => {
+      if (historyEditMode) {
+        if (historySelected.has(s.id)) historySelected.delete(s.id);
+        else historySelected.add(s.id);
+        li.classList.toggle('selected', historySelected.has(s.id));
+        el['btn-history-delete'].textContent = historySelected.size ? 'Delete (' + historySelected.size + ')' : 'Delete';
+      } else {
+        loadSession(s.id);
+      }
+    });
     list.appendChild(li);
   });
+  if (historyEditMode) el['btn-history-delete'].textContent = historySelected.size ? 'Delete (' + historySelected.size + ')' : 'Delete';
 }
 
 function startNewConversation() {
@@ -2395,6 +2440,9 @@ function init() {
     card.addEventListener('click', () => { navigateTo(card.dataset.target); });
   });
   el['btn-ask-now'].addEventListener('click', () => { navigateTo('chat'); });
+  el['btn-history-edit'].addEventListener('click', toggleHistoryEdit);
+  el['btn-history-delete'].addEventListener('click', deleteSelectedSessions);
+  el['btn-history-cancel'].addEventListener('click', toggleHistoryEdit);
   el['btn-back-chat'].addEventListener('click', () => { navigateTo('dashboard'); });
   el['btn-back-voice'].addEventListener('click', () => { navigateTo('dashboard'); });
   el['btn-exit-voice'].addEventListener('click', () => { navigateTo('dashboard'); });
