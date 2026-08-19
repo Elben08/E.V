@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v43';
+const APP_VERSION = 'v44';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -692,21 +692,33 @@ function analyzeSensitivity(text) {
   return { sensitive, categories: [...hits] };
 }
 
-function chooseProvider(analysis) {
+function chooseProvider(analysis, text) {
   const p = settings.provider;
   const groqOk = !!settings.groqKey;
+  const geminiOk = !!settings.geminiKey;
+  const liveInfo = text && needsLiveInfo(text);
   if (p === 'gemini') return { provider: 'gemini', reason: '' };
-  if (p === 'groq') return { provider: 'groq', reason: 'settings' };
+  if (p === 'groq') {
+    if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
+    return { provider: 'groq', reason: 'settings' };
+  }
   if (p === 'openrouter') {
     /* free-router models may train on data: keep sensitive/private on Groq whenever possible */
     if ((analysis.sensitive || privateMode) && groqOk) return { provider: 'groq', reason: 'sensitive' };
+    /* only Gemini has google_search — route live-info queries there when available */
+    if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
     return { provider: 'openrouter', reason: 'settings' };
   }
   const priv = settings.privacy;
-  if (priv === 'groq') return { provider: 'groq', reason: 'policy' };
+  if (priv === 'groq') {
+    if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
+    return { provider: 'groq', reason: 'policy' };
+  }
   if (priv === 'auto' && analysis.sensitive) return { provider: 'groq', reason: 'sensitive' };
   if (priv === 'auto' && privateMode) return { provider: 'groq', reason: 'private' };
   if (priv === 'manual' && (analysis.private || privateMode)) return { provider: 'groq', reason: 'private' };
+  /* live-info queries prefer Gemini when available */
+  if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
   /* auto: route around providers known to be out this session */
   if (isProviderOut('gemini') && groqOk) return { provider: 'groq', reason: 'gemini-out' };
   if (isProviderOut('groq') && !isProviderOut('gemini') && settings.geminiKey) return { provider: 'gemini', reason: 'groq-out' };
@@ -1250,7 +1262,7 @@ async function retryHistoryEntry(bubble, index) {
   if (!h || !h.failed) return;
   const text = h.retryUserText || h.text;
   const analysis = analyzeSensitivity(text);
-  const { provider, reason } = chooseProvider(analysis);
+  const { provider, reason } = chooseProvider(analysis, text);
   await performReply(bubble, {
     userText: text,
     provider: provider,
@@ -1985,7 +1997,7 @@ async function send(rawText) {
   saveJSON(STORAGE.history, history);
 
   const note = cmdReply ? '\n[Handled by app: ' + cmdReply + ']' : '';
-  const { provider, reason } = chooseProvider(analysis);
+  const { provider, reason } = chooseProvider(analysis, text);
 
   const hasPdf = pendingAttachments.some((a) => a.kind === 'pdf');
   if (hasPdf && provider === 'groq') {
