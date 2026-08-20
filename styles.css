@@ -79,11 +79,12 @@ body::after {
   align-items: center;
   justify-content: center;
   z-index: 2;
+  overflow: hidden;
   background: radial-gradient(circle at 50% 50%, rgba(57, 198, 255, 0.08) 0%, transparent 60%);
 }
 .globe-svg {
-  width: 520px;
-  height: 520px;
+  width: 100vmax;
+  height: 100vmax;
   opacity: 0.6;
   animation: globeSpin 80s linear infinite;
 }
