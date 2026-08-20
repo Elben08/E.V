@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v66';
+const APP_VERSION = 'v67';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1776,6 +1776,14 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   let _thinkingOpen = false;
   let _thinkingEnd = 0;
   let succeededProvider = '';
+  let _displayPending = false;
+  function flushDisplay() {
+    _displayPending = false;
+    const display = _thinkingOpen ? reply.slice(0, _thinkingEnd).trim() : reply.trim();
+    bodyEl.textContent = display || reply;
+    if (handsFreeActive) updateVoiceTranscript(display || reply);
+    el.chat.scrollTop = el.chat.scrollHeight;
+  }
   const token = (chunk) => {
     if (typeof chunk !== 'string') return;
     reply += chunk;
@@ -1783,10 +1791,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     const lc = chunk.toLowerCase();
     if (lc.indexOf('<thinking>') !== -1) { _thinkingOpen = true; _thinkingEnd = reply.lastIndexOf('<thinking>'); }
     if (lc.indexOf('</thinking>') !== -1) { _thinkingOpen = false; _thinkingEnd = reply.lastIndexOf('</thinking>') + '</thinking>'.length; }
-    const display = _thinkingOpen ? reply.slice(0, _thinkingEnd).trim() : reply.trim();
-    bodyEl.textContent = display || reply;
-    if (handsFreeActive) throttledTranscript(display || reply);
-    throttledScroll();
+    if (!_displayPending) { _displayPending = true; requestAnimationFrame(flushDisplay); }
   };
   const groqStart = () => (attachments.length ? firstVisionIndex('groq') : undefined);
   const geminiFailure = (geminiErr) => geminiErr.rateLimited
@@ -2020,6 +2025,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   busy = false;
   updateSendDisabled();
   setStatus('online', '');
+  flushDisplay();
   const cleaned = reply.trim();
   if (!cleaned) { failThis('E.V received nothing back. Try again.'); return; }
   usedLabel = baseLabelFor(ctx);
