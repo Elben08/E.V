@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v55';
+const APP_VERSION = 'v56';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1921,22 +1921,34 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             return;
           } catch (orErr) {
             if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
-            failThis(orErr.message);
-            return;
           }
+        }
+        /* Try Gemini as last resort before giving up */
+        if (settings.geminiKey && !curHasImage && !curHasPdf) {
+          try {
+            const geminiParts = [];
+            await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts.push(t), true, true);
+            const cleaned = geminiParts.join('').trim();
+            if (cleaned) {
+              token(cleaned);
+              markFallbackNote('gemini \u00b7 fallback', 'Groq is rate-limited \u2014 answered by Gemini instead');
+              succeededProvider = 'gemini';
+              return;
+            }
+          } catch (_) { /* fall through */ }
         }
         await autoRetryRateLimit(err);
         return;
       }
       if (isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
+        let openrouterFailed = false;
         if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasImage && !curHasPdf) {
           try {
             await fallbackToOpenRouter(err);
             return;
           } catch (orErr) {
+            openrouterFailed = true;
             if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
-            failThis(orErr.message);
-            return;
           }
         }
         /* Last resort: Gemini has no 8K TPM limit and doesn't train on data */
@@ -1953,7 +1965,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             }
           } catch (_) { /* fall through to error */ }
         }
-        failThis('Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
+        const hint = openrouterFailed ? ' OpenRouter also couldn\u2019t fit it.' : '';
+        failThis('Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit).' + hint + ' Try a shorter message, or clear Memory / start a new conversation.');
         return;
       }
       failThis(err.message);
