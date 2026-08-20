@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v69';
+const APP_VERSION = 'v70';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -2322,12 +2322,22 @@ function stopVoiceScreenListening() {
 }
 
 /* ---- Session management ---- */
+let activeSessionId = null;
+
 function saveSession() {
   if (!history.length) return;
   const firstUser = history.find((h) => h.role === 'user');
   const preview = firstUser ? firstUser.text.slice(0, 80) : 'Conversation';
   const sessions = loadJSON(STORAGE.sessions, []);
-  sessions.push({ id: Date.now(), preview: preview, timestamp: Date.now(), history: JSON.parse(JSON.stringify(history)) });
+  const snap = JSON.parse(JSON.stringify(history));
+  if (activeSessionId != null) {
+    const existing = sessions.find((s) => s.id === activeSessionId);
+    if (existing) { existing.preview = preview; existing.timestamp = Date.now(); existing.history = snap; }
+    else { sessions.push({ id: activeSessionId, preview: preview, timestamp: Date.now(), history: snap }); }
+  } else {
+    activeSessionId = Date.now();
+    sessions.push({ id: activeSessionId, preview: preview, timestamp: Date.now(), history: snap });
+  }
   if (sessions.length > 20) sessions.splice(0, sessions.length - 20);
   saveJSON(STORAGE.sessions, sessions);
 }
@@ -2338,6 +2348,7 @@ function loadSession(id) {
   const session = sessions.find((s) => s.id === id);
   if (!session) return;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
+  activeSessionId = id;
   history = JSON.parse(JSON.stringify(session.history));
   saveJSON(STORAGE.history, history);
   conversationSummary = '';
@@ -2442,6 +2453,7 @@ function startNewConversation() {
   if (!window.confirm('Start a new conversation? The current chat will be cleared. Your saved memory and settings are kept.')) return;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   saveSession();
+  activeSessionId = null;
   history = [];
   saveJSON(STORAGE.history, history);
   conversationSummary = '';
