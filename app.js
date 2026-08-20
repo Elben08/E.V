@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v61';
+const APP_VERSION = 'v62';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -2019,16 +2019,26 @@ async function send(rawText) {
   saveJSON(STORAGE.history, history);
 
   const note = cmdReply ? '\n[Handled by app: ' + cmdReply + ']' : '';
-  const { provider, reason } = chooseProvider(analysis, text);
+  let { provider, reason } = chooseProvider(analysis, text);
 
   const hasPdf = pendingAttachments.some((a) => a.kind === 'pdf');
   if (hasPdf && provider === 'groq') {
-    toast('Groq can\u2019t read PDFs. Remove the PDF or switch provider to Gemini.');
-    return;
+    if (settings.geminiKey) {
+      provider = 'gemini'; reason = 'pdf-reroute';
+      toast('Rerouting to Gemini for PDF\u2026');
+    } else {
+      toast('Groq can\u2019t read PDFs and no Gemini key is set. Add a Gemini key in Settings.');
+      return;
+    }
   }
   if (hasPdf && provider === 'openrouter') {
-    toast('OpenRouter can\u2019t read PDFs in E.V yet. Remove the PDF or switch provider to Gemini.');
-    return;
+    if (settings.geminiKey) {
+      provider = 'gemini'; reason = 'pdf-reroute';
+      toast('Rerouting to Gemini for PDF\u2026');
+    } else {
+      toast('OpenRouter can\u2019t read PDFs in E.V yet and no Gemini key is set.');
+      return;
+    }
   }
   const hasImage = pendingAttachments.some((a) => a.kind === 'image');
   if (provider === 'groq' && hasImage) {
