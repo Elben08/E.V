@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v58';
+const APP_VERSION = 'v59';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1924,7 +1924,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           }
         }
         /* Try Gemini as last resort (supports PDFs natively) */
-        if (settings.geminiKey && !curHasImage) {
+        if (settings.geminiKey && !curHasImage && !isProviderOut('gemini')) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
@@ -1955,11 +1955,11 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           }
         }
         /* Last resort: Gemini natively supports PDFs and has no 8K TPM limit */
-        if (settings.geminiKey && !curHasImage) {
+        if (settings.geminiKey && !curHasImage && !isProviderOut('gemini')) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), false, true);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
