@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v56';
+const APP_VERSION = 'v57';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1923,11 +1923,11 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
           }
         }
-        /* Try Gemini as last resort before giving up */
-        if (settings.geminiKey && !curHasImage && !curHasPdf) {
+        /* Try Gemini as last resort (supports PDFs natively) */
+        if (settings.geminiKey && !curHasImage) {
           try {
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts.push(t), true, true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, true);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
@@ -1951,15 +1951,16 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
           }
         }
-        /* Last resort: Gemini has no 8K TPM limit and doesn't train on data */
-        if (settings.geminiKey && !curHasImage && !curHasPdf) {
+        /* Last resort: Gemini natively supports PDFs and has no 8K TPM limit */
+        if (settings.geminiKey && !curHasImage) {
           try {
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts.push(t), true, true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, true);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
-              markFallbackNote('gemini \u00b7 fallback', 'Groq can\u2019t fit this request \u2014 answered by Gemini instead');
+              const note = curHasPdf ? 'Groq can\u2019t read PDFs \u2014 answered by Gemini instead' : 'Groq can\u2019t fit this request \u2014 answered by Gemini instead';
+              markFallbackNote('gemini \u00b7 fallback', note);
               succeededProvider = 'gemini';
               return;
             }
