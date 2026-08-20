@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v57';
+const APP_VERSION = 'v58';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1926,6 +1926,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         /* Try Gemini as last resort (supports PDFs natively) */
         if (settings.geminiKey && !curHasImage) {
           try {
+            toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
             await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, true);
             const cleaned = geminiParts.join('').trim();
@@ -1935,7 +1936,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               succeededProvider = 'gemini';
               return;
             }
-          } catch (_) { /* fall through */ }
+          } catch (gemErr) {
+            toast('Gemini fallback also failed: ' + (gemErr.message || gemErr));
+          }
         }
         await autoRetryRateLimit(err);
         return;
@@ -1954,6 +1957,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         /* Last resort: Gemini natively supports PDFs and has no 8K TPM limit */
         if (settings.geminiKey && !curHasImage) {
           try {
+            toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
             await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, true);
             const cleaned = geminiParts.join('').trim();
@@ -1964,7 +1968,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               succeededProvider = 'gemini';
               return;
             }
-          } catch (_) { /* fall through to error */ }
+          } catch (gemErr) {
+            toast('Gemini fallback also failed: ' + (gemErr.message || gemErr));
+          }
         }
         const hint = openrouterFailed ? ' OpenRouter also couldn\u2019t fit it.' : '';
         failThis('Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit).' + hint + ' Try a shorter message, or clear Memory / start a new conversation.');
