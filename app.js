@@ -19,9 +19,9 @@ const SYSTEM_PROMPT = [
 const GEMINI_MODELS = [
   { id: 'gemini-3.5-flash', vision: true },
   { id: 'gemini-3.6-flash', vision: true },
+  { id: 'gemini-3.5-flash-lite', vision: true },
   { id: 'gemini-3.1-flash-lite', vision: true },
-  { id: 'gemini-2.5-flash', vision: true },
-  { id: 'gemini-2.5-flash-lite', vision: true }
+  { id: 'gemini-2.5-flash', vision: true }
 ];
 const GROQ_MODELS = [
   { id: 'openai/gpt-oss-120b', vision: false },
@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v62';
+const APP_VERSION = 'v63';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1885,6 +1885,10 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       succeededProvider = 'gemini';
       clearProviderOut('gemini');
     } catch (err) {
+      if (curHasPdf) {
+        failThis('Gemini couldn\u2019t process this PDF \u2014 all models unavailable or rate-limited. Try again later or use a shorter message.');
+        return;
+      }
       try {
         await fallbackToGroq(err);
       } catch (err2) {
