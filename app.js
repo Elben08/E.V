@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v59';
+const APP_VERSION = 'v60';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1934,6 +1934,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               token(cleaned);
               markFallbackNote('gemini \u00b7 fallback', 'Groq is rate-limited \u2014 answered by Gemini instead');
               succeededProvider = 'gemini';
+              busy = false;
+              updateSendDisabled();
               return;
             }
           } catch (gemErr) {
@@ -1966,6 +1968,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               const note = curHasPdf ? 'Groq can\u2019t read PDFs \u2014 answered by Gemini instead' : 'Groq can\u2019t fit this request \u2014 answered by Gemini instead';
               markFallbackNote('gemini \u00b7 fallback', note);
               succeededProvider = 'gemini';
+              busy = false;
+              updateSendDisabled();
               return;
             }
           } catch (gemErr) {
