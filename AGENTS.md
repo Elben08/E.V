@@ -48,3 +48,16 @@ Estimate is `Math.ceil(text.length / 4)`, which undercounts real Groq tokens by 
 - UI glyphs are HTML entities (`&#10133;`), not raw emoji. `styles.css` is the only styling file; there is a `max-width: 380px` narrow-screen media query and `#text-input { min-width: 0 }` that must stay (reactor clipping regression).
 - Primary font is Google Fonts `Exo 2` (loaded via `<link>` in `index.html` head); theme is holographic/dark-navy with cyan glow, glassmorphism panels, scan-line background. Keep the `--cyan`/`--pink`/`--glass` CSS variable palette when tweaking.
 - User-facing docs live in `README.md` (setup, phone commands, MacroDroid macros, privacy model).
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
