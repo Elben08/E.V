@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v67';
+const APP_VERSION = 'v68';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -2293,7 +2293,7 @@ function navigateTo(screen) {
 
   /* slide out current */
   if (currentScreen === 'dashboard') dash.classList.remove('screen--active');
-  else if (currentScreen === 'chat') { chat.classList.remove('screen--active'); chat.classList.add('screen--left'); saveSession(); }
+  else if (currentScreen === 'chat') { chat.classList.remove('screen--active'); chat.classList.add('screen--left'); if (!busy) saveSession(); }
   else if (currentScreen === 'voice') { voice.classList.remove('screen--active'); voice.classList.add('screen--left'); stopVoiceScreenListening(); }
 
   /* slide in target */
@@ -2500,7 +2500,7 @@ function init() {
     handleFileInput(el['file-input'].files);
     el['file-input'].value = '';
   });
-  window.addEventListener('beforeunload', () => { saveSession(); if (pendingAttachments.length) setPendingAttachments([]); });
+  window.addEventListener('beforeunload', () => { if (!busy) saveSession(); if (pendingAttachments.length) setPendingAttachments([]); });
   el['btn-settings'].addEventListener('click', openSettings);
   el['btn-settings-save'].addEventListener('click', saveSettingsForm);
   el['btn-settings-cancel'].addEventListener('click', () => hide(el['modal-settings']));
@@ -2533,7 +2533,7 @@ function init() {
   el['btn-history-selectall'].addEventListener('click', toggleSelectAll);
   el['btn-history-delete'].addEventListener('click', deleteSelectedSessions);
   el['btn-history-cancel'].addEventListener('click', toggleHistoryEdit);
-  el['btn-back-chat'].addEventListener('click', () => { navigateTo('dashboard'); });
+  el['btn-back-chat'].addEventListener('click', () => { if (busy) return; navigateTo('dashboard'); });
   el['btn-back-voice'].addEventListener('click', () => { navigateTo('dashboard'); });
   el['btn-exit-voice'].addEventListener('click', () => { navigateTo('dashboard'); });
   if (el['reactor-screen']) el['reactor-screen'].addEventListener('click', toggleListening);
