@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v65';
+const APP_VERSION = 'v66';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -327,17 +327,16 @@ function fitOpenAITextBudget(provider, userText, attachments, budget, ratio) {
   if (estimateMessagesTokens(messages, ratio) <= b) {
     return { messages: messages, fits: true, trimmed: false, estimated: 0 };
   }
-  const histArr = history.slice();
-  for (let keep = histArr.length - 1; keep >= 0; keep--) {
-    const hist = keep === 0 ? [] : histArr.slice(histArr.length - keep);
-    const m = buildMessages(provider, userText, attachments, hist);
+  /* Pre-extract the fixed parts (system + user) so the trim loop only slices history */
+  const sysMsg = messages[0];
+  const userMsg = messages[messages.length - 1];
+  const histMsgs = messages.slice(1, messages.length - 1);
+  for (let keep = histMsgs.length; keep >= 0; keep--) {
+    const m = [sysMsg].concat(keep ? histMsgs.slice(histMsgs.length - keep) : [], [userMsg]);
     if (estimateMessagesTokens(m, ratio) <= b) {
-      const last = m[m.length - 1];
       const note = '\n[Note: the earlier part of this conversation was trimmed to fit the free limit.]';
-      if (last && last.content) {
-        if (typeof last.content === 'string') last.content += note;
-        else if (Array.isArray(last.content)) last.content.push({ type: 'text', text: note });
-      }
+      if (typeof userMsg.content === 'string') userMsg.content += note;
+      else if (Array.isArray(userMsg.content)) userMsg.content.push({ type: 'text', text: note });
       return { messages: m, fits: true, trimmed: true, estimated: 0 };
     }
   }
@@ -737,7 +736,12 @@ function visibleFacts(provider) {
   return out;
 }
 
+let _systemCache = {};
+function clearSystemCache() { _systemCache = {}; }
+
 function buildSystem(provider) {
+  const cacheKey = provider + '|' + facts.length + '|' + conversationSummary.length + '|' + privateMode;
+  if (_systemCache[cacheKey]) return _systemCache[cacheKey];
   const f = visibleFacts(provider);
   /* Gemini alone has live web grounding (googleSearch); Groq/OpenRouter must not pretend they
      can fetch today's weather/news or they'll confidently answer from stale training data. */
@@ -748,6 +752,7 @@ function buildSystem(provider) {
     out += '\n\nFacts about the user:\n' + list;
   }
   if (privateMode) out += '\n\n[PRIVATE SESSION ACTIVE] The user asked to keep this conversation private. Do not mention this mode unless asked.';
+  _systemCache[cacheKey] = out;
   return out;
 }
 
@@ -904,8 +909,8 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
   };
 
   const recoverFromRateLimit = async (model) => {
-    for (let t = 1; t <= 3; t++) {
-      await sleep(3000 * t);
+    for (let t = 1; t <= 2; t++) {
+      await sleep(2000 * t);
       try {
         await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
         return true;
@@ -1158,6 +1163,12 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
 function show(node) { node.classList.remove('hidden'); }
 function hide(node) { node.classList.add('hidden'); }
 function scrollChat() { el.chat.scrollTop = el.chat.scrollHeight; }
+let _scrollPending = false;
+function throttledScroll() {
+  if (_scrollPending) return;
+  _scrollPending = true;
+  requestAnimationFrame(() => { el.chat.scrollTop = el.chat.scrollHeight; _scrollPending = false; });
+}
 
 function setStatus(label, cls) {
   el['status-text'].textContent = label;
@@ -1183,6 +1194,14 @@ function setVoiceOverlay(on, working) {
 
 function updateVoiceTranscript(text) {
   el['vo-transcript'].textContent = text || '';
+}
+let _transcriptPending = false;
+let _transcriptText = '';
+function throttledTranscript(text) {
+  _transcriptText = text;
+  if (_transcriptPending) return;
+  _transcriptPending = true;
+  requestAnimationFrame(() => { updateVoiceTranscript(_transcriptText); _transcriptPending = false; });
 }
 
 let toastTimer;
@@ -1696,6 +1715,7 @@ function extractFacts(text) {
   }
   if (added) {
     saveJSON(STORAGE.facts, facts);
+    clearSystemCache();
     if (!el['modal-memory'].classList.contains('hidden')) renderMemoryList();
   }
 }
@@ -1753,14 +1773,20 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   };
 
   let reply = '';
+  let _thinkingOpen = false;
+  let _thinkingEnd = 0;
   let succeededProvider = '';
   const token = (chunk) => {
     if (typeof chunk !== 'string') return;
     reply += chunk;
-    const display = reply.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+    /* Track <thinking> state incrementally — O(chunk) instead of O(entire reply) */
+    const lc = chunk.toLowerCase();
+    if (lc.indexOf('<thinking>') !== -1) { _thinkingOpen = true; _thinkingEnd = reply.lastIndexOf('<thinking>'); }
+    if (lc.indexOf('</thinking>') !== -1) { _thinkingOpen = false; _thinkingEnd = reply.lastIndexOf('</thinking>') + '</thinking>'.length; }
+    const display = _thinkingOpen ? reply.slice(0, _thinkingEnd).trim() : reply.trim();
     bodyEl.textContent = display || reply;
-    if (handsFreeActive) updateVoiceTranscript(display || reply);
-    scrollChat();
+    if (handsFreeActive) throttledTranscript(display || reply);
+    throttledScroll();
   };
   const groqStart = () => (attachments.length ? firstVisionIndex('groq') : undefined);
   const geminiFailure = (geminiErr) => geminiErr.rateLimited
@@ -2309,6 +2335,7 @@ function loadSession(id) {
   conversationSummary = '';
   saveJSON(STORAGE.conversationSummary, conversationSummary);
   lastSummaryLen = 0;
+  clearSystemCache();
   setPendingAttachments([]);
   el.chat.innerHTML = '';
   renderHistory();
@@ -2412,6 +2439,7 @@ function startNewConversation() {
   conversationSummary = '';
   saveJSON(STORAGE.conversationSummary, conversationSummary);
   lastSummaryLen = 0;
+  clearSystemCache();
   setPendingAttachments([]);
   el.chat.innerHTML = '';
   addMsg('ev', HELLO_MSG);

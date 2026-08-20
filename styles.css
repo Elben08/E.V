@@ -67,7 +67,7 @@ body::after {
     rgba(57, 198, 255, 0.015) 2px,
     rgba(57, 198, 255, 0.015) 4px
   );
-  opacity: 0.7;
+  opacity: 0.35;
 }
 
 /* ---------- Globe background ---------- */
@@ -106,6 +106,7 @@ body::after {
 }
 .screen--active { transform: translateX(0); }
 .screen--left { transform: translateX(-100%); }
+.screen--left *, .screen--left *::before, .screen--left *::after { animation-play-state: paused !important; }
 
 /* ---------- Top bar ---------- */
 .topbar {
@@ -179,7 +180,6 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  scroll-behavior: smooth;
 }
 
 .msg {
@@ -192,8 +192,6 @@ body::after {
   white-space: pre-wrap;
   word-wrap: break-word;
   animation: rise 0.3s ease-out;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 .msg.user {
