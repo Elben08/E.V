@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v63';
+const APP_VERSION = 'v64';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -671,7 +671,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'voice-overlay', 'vo-transcript', 'vo-status',
   'screen-dashboard', 'screen-chat', 'screen-voice',
   'dash-greeting-text', 'dash-history-list', 'btn-ask-now',
-  'btn-history-edit', 'btn-history-delete', 'btn-history-cancel',
+  'btn-history-edit', 'btn-history-selectall', 'btn-history-delete', 'btn-history-cancel',
   'btn-back-chat', 'btn-back-voice', 'btn-exit-voice', 'reactor-screen'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
@@ -2323,8 +2323,19 @@ function toggleHistoryEdit() {
   historyEditMode = !historyEditMode;
   historySelected.clear();
   el['btn-history-edit'].style.display = historyEditMode ? 'none' : '';
+  el['btn-history-selectall'].style.display = historyEditMode ? '' : 'none';
   el['btn-history-delete'].style.display = historyEditMode ? '' : 'none';
   el['btn-history-cancel'].style.display = historyEditMode ? '' : 'none';
+  populateDashboard();
+}
+
+function toggleSelectAll() {
+  const sessions = loadJSON(STORAGE.sessions, []);
+  if (historySelected.size === sessions.length) {
+    historySelected.clear();
+  } else {
+    sessions.forEach((s) => historySelected.add(s.id));
+  }
   populateDashboard();
 }
 
@@ -2337,6 +2348,7 @@ function deleteSelectedSessions() {
   historyEditMode = false;
   historySelected.clear();
   el['btn-history-edit'].style.display = '';
+  el['btn-history-selectall'].style.display = 'none';
   el['btn-history-delete'].style.display = 'none';
   el['btn-history-cancel'].style.display = 'none';
   populateDashboard();
@@ -2349,6 +2361,7 @@ function populateDashboard() {
   el['dash-greeting-text'].textContent = greeting;
 
   el['btn-history-edit'].style.display = historyEditMode ? 'none' : '';
+  el['btn-history-selectall'].style.display = historyEditMode ? '' : 'none';
   el['btn-history-delete'].style.display = historyEditMode ? '' : 'none';
   el['btn-history-cancel'].style.display = historyEditMode ? '' : 'none';
 
@@ -2376,13 +2389,17 @@ function populateDashboard() {
         else historySelected.add(s.id);
         li.classList.toggle('selected', historySelected.has(s.id));
         el['btn-history-delete'].textContent = historySelected.size ? 'Delete (' + historySelected.size + ')' : 'Delete';
+        el['btn-history-selectall'].textContent = historySelected.size === sessions.length ? 'Deselect All' : 'Select All';
       } else {
         loadSession(s.id);
       }
     });
     list.appendChild(li);
   });
-  if (historyEditMode) el['btn-history-delete'].textContent = historySelected.size ? 'Delete (' + historySelected.size + ')' : 'Delete';
+  if (historyEditMode) {
+    el['btn-history-delete'].textContent = historySelected.size ? 'Delete (' + historySelected.size + ')' : 'Delete';
+    el['btn-history-selectall'].textContent = historySelected.size === sessions.length ? 'Deselect All' : 'Select All';
+  }
 }
 
 function startNewConversation() {
@@ -2479,6 +2496,7 @@ function init() {
   });
   el['btn-ask-now'].addEventListener('click', () => { navigateTo('chat'); });
   el['btn-history-edit'].addEventListener('click', toggleHistoryEdit);
+  el['btn-history-selectall'].addEventListener('click', toggleSelectAll);
   el['btn-history-delete'].addEventListener('click', deleteSelectedSessions);
   el['btn-history-cancel'].addEventListener('click', toggleHistoryEdit);
   el['btn-back-chat'].addEventListener('click', () => { navigateTo('dashboard'); });
