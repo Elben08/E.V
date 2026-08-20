@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v60';
+const APP_VERSION = 'v61';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1924,7 +1924,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           }
         }
         /* Try Gemini as last resort (supports PDFs natively) */
-        if (settings.geminiKey && !curHasImage && !isProviderOut('gemini')) {
+        if (settings.geminiKey && !curHasImage) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
@@ -1957,7 +1957,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           }
         }
         /* Last resort: Gemini natively supports PDFs and has no 8K TPM limit */
-        if (settings.geminiKey && !curHasImage && !isProviderOut('gemini')) {
+        if (settings.geminiKey && !curHasImage) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
