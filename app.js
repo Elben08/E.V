@@ -127,7 +127,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v73';
+const APP_VERSION = 'v74';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -274,7 +274,7 @@ function isTooLargeError(msg) {
 }
 
 function isDailyQuotaError(detail) {
-  return /daily|quota exceeded|free_tier_requests|per day\b|resets? at midnight|purchased credits|free.*credits|RPD/i.test(detail || '');
+  return /daily|quota exceeded|exceeded.*quota|free_tier_requests|per day\b|resets? at midnight|purchased credits|free.*credits|RPD/i.test(detail || '');
 }
 
 const RATE_HINT_PER_MINUTE = ' This usually clears in a minute \u2014 if it persists, check your free-tier quota.';
@@ -1878,7 +1878,6 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         if (err.tooLarge || isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
           /* Groq 8K TPM too small: try OpenRouter before giving up (text-only, non-sensitive) */
           if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
-            toast('[debug] OpenRouter fallback: key=' + !!settings.openrouterKey + ' sensitive=' + ctx.sensitive + ' private=' + privateMode);
             try {
               await fallbackToOpenRouter(geminiErr);
               return;
@@ -1900,6 +1899,13 @@ async function performReply(bubble, ctx, autoRetryLeft) {
                 return;
               }
             } catch (_) { /* fall through to error */ }
+          }
+          /* Before giving up entirely, try OpenRouter as last resort (text-only, non-sensitive) */
+          if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
+            try {
+              await fallbackToOpenRouter(geminiErr);
+              return;
+            } catch (_) { /* fall through to final error */ }
           }
           throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
         }
