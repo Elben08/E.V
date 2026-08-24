@@ -127,7 +127,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v76';
+const APP_VERSION = 'v77';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1962,6 +1962,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasImage && !curHasPdf) {
           try {
             await fallbackToOpenRouter(err);
+            busy = false;
+            updateSendDisabled();
             return;
           } catch (orErr) {
             if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
@@ -1995,6 +1997,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasImage && !curHasPdf) {
           try {
             await fallbackToOpenRouter(err);
+            busy = false;
+            updateSendDisabled();
             return;
           } catch (orErr) {
             openrouterFailed = true;
