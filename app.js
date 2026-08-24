@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v79';
+const APP_VERSION = 'v80';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -591,18 +591,21 @@ let lastOpenRouterModel = '';
 
 const OUTAGE_MS = 300000;
 let providerOut = {};
+let providerOutMs = {};
 
 function isProviderOut(provider) {
   const t = providerOut[provider];
-  return !!t && Date.now() - t < OUTAGE_MS;
+  return !!t && Date.now() - t < (providerOutMs[provider] || OUTAGE_MS);
 }
 
-function markProviderOut(provider) {
+function markProviderOut(provider, ms) {
   providerOut[provider] = Date.now();
+  if (ms) providerOutMs[provider] = ms;
 }
 
 function clearProviderOut(provider) {
   delete providerOut[provider];
+  delete providerOutMs[provider];
 }
 
 function modelList(provider) {
@@ -699,7 +702,11 @@ function chooseProvider(analysis, text) {
   const geminiOk = !!settings.geminiKey;
   const liveInfo = text && needsLiveInfo(text);
   if (freshConversation && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'fresh' };
-  if (p === 'gemini') return { provider: 'gemini', reason: '' };
+  if (p === 'gemini') {
+    if (isProviderOut('gemini') && groqOk) return { provider: 'groq', reason: 'gemini-out' };
+    if (isProviderOut('gemini') && settings.openrouterKey) return { provider: 'openrouter', reason: 'gemini-out' };
+    return { provider: 'gemini', reason: '' };
+  }
   if (p === 'groq') {
     if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
     return { provider: 'groq', reason: 'settings' };
@@ -938,7 +945,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     } catch (e) {
       if (e.rateLimited) {
         /* daily per-model cap (20 req/day): skip the ~18s recover loop and rotate to the next model */
-        if (e.dailyQuota) { lastErr = e; continue; }
+        if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', 86400000); break; }
         if (await recover(model)) { setActiveModel('gemini', i); return; }
         lastErr = e;
         continue;
@@ -955,7 +962,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
-              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; break; }
+              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; markProviderOut('gemini', 86400000); break; }
               if (await recover(model)) { setActiveModel('gemini', i); return; }
               lastErr = e2;
               break;
@@ -1821,6 +1828,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     if (!settings.openrouterKey) throw prevErr;
     /* free-router may train on data: only text-only, non-sensitive turns */
     if (curHasPdf || curHasImage || ctx.sensitive || privateMode) throw prevErr;
+    toast('Trying OpenRouter\u2026');
     try {
       await openAISendFitted('openrouter', ctx.userText, [], token, curGroqMaxTokens);
     } catch (orErr) {
@@ -1845,6 +1853,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
 
   const fallbackToGroq = async (geminiErr) => {
     const gFail = geminiFailure(geminiErr);
+    toast(gFail + ' Trying Groq\u2026');
     if (!settings.groqKey) {
       if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
         await fallbackToOpenRouter(geminiErr);
