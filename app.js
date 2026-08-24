@@ -127,7 +127,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v74';
+const APP_VERSION = 'v75';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1839,6 +1839,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
 
   const fallbackToGroq = async (geminiErr) => {
     const gFail = geminiFailure(geminiErr);
+    toast('[fallback] rateLimited=' + geminiErr.rateLimited + ' dailyQuota=' + geminiErr.dailyQuota + ' orKey=' + JSON.stringify(settings.openrouterKey).slice(0, 8) + ' sensitive=' + ctx.sensitive + ' private=' + privateMode);
     if (!settings.groqKey) {
       if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
         await fallbackToOpenRouter(geminiErr);
