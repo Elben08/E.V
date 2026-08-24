@@ -20,8 +20,7 @@ const GEMINI_MODELS = [
   { id: 'gemini-3.5-flash', vision: true },
   { id: 'gemini-3.6-flash', vision: true },
   { id: 'gemini-3.5-flash-lite', vision: true },
-  { id: 'gemini-3.1-flash-lite', vision: true },
-  { id: 'gemini-2.5-flash', vision: true }
+  { id: 'gemini-3.1-flash-lite', vision: true }
 ];
 const GROQ_MODELS = [
   { id: 'openai/gpt-oss-120b', vision: false },
@@ -128,7 +127,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v72';
+const APP_VERSION = 'v73';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1879,6 +1878,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         if (err.tooLarge || isTooLargeError(err.detail) || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG) {
           /* Groq 8K TPM too small: try OpenRouter before giving up (text-only, non-sensitive) */
           if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
+            toast('[debug] OpenRouter fallback: key=' + !!settings.openrouterKey + ' sensitive=' + ctx.sensitive + ' private=' + privateMode);
             try {
               await fallbackToOpenRouter(geminiErr);
               return;
