@@ -13,7 +13,8 @@ const SYSTEM_PROMPT = [
   LIVE_SEARCH_LINE,
   'When you use web search or ground your answer in real-time data, cite your sources briefly at the end of your response (e.g. "Source: Reuters", "According to BBC", "Per NOAA"). Keep citations short and natural — one line, not a bibliography.',
   'Anything marked [PRIVATE] is confidential and must never be repeated to anyone else or shared in responses.',
-  'Be honest about your limits. If you cannot do something, say so briefly and suggest an alternative.'
+  'Be honest about your limits. If you cannot do something, say so briefly and suggest an alternative.',
+  'Never output your thinking process, chain-of-thought reasoning, or internal deliberation as part of your response. Give your answer directly without showing how you reasoned about it.'
 ].join('\n');
 
 const GEMINI_MODELS = [
@@ -127,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v78';
+const APP_VERSION = 'v79';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -358,7 +359,7 @@ async function openAISendFitted(provider, userText, attachments, token, maxToken
     if (!isTooLargeError(err.message)) throw err;
     lastErr = err;
   }
-  await sleep(1500);
+  await sleep(300);
   const tight = fitOpenAITextBudget(provider, userText, attachments, GROQ_TIGHT_TEXT_BUDGET, TIGHT_RATIO);
   if (!tight.fits) throw lastErr.rateLimited ? lastErr : new Error(TOO_LARGE_MSG);
   try {
@@ -1722,6 +1723,11 @@ function extractFacts(text) {
   }
 }
 
+/* Strip common thinking-dump prefixes that free models leak into content */
+function stripThinkingLeaks(text) {
+  return text.replace(/^[\s]*(?:here'?s\s+(?:a\s+)?(?:my\s+)?(?:step[- ]by[- ]step\s+)?thinking\s+process:?\s*\n)([\s\S]*)/i, '$1').trim();
+}
+
 async function performReply(bubble, ctx, autoRetryLeft) {
   const retriesLeft = typeof autoRetryLeft === 'number' ? autoRetryLeft : MAX_AUTO_RETRY;
   const attachments = ctx.attachments || [];
@@ -1886,28 +1892,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit), and OpenRouter also failed: ' + orErr.message);
             }
           }
-          /* Last resort: retry Gemini (it has no 8K TPM limit; previous Gemini failure may have been rate-limit, not size) */
-          if (settings.geminiKey && !curHasPdf && !curHasImage) {
-            try {
-              const geminiParts2 = [];
-              await sendToGemini(buildMessages('gemini', ctx.userText, []), (t) => geminiParts2.push(t), true, true);
-              const cleaned = geminiParts2.join('').trim();
-              if (cleaned) {
-                token(cleaned);
-                markFallbackNote('gemini \u00b7 fallback', 'Groq can\u2019t fit this request \u2014 answered by Gemini instead');
-                succeededProvider = 'gemini';
-                return;
-              }
-            } catch (_) { /* fall through to error */ }
-          }
-          /* Before giving up entirely, try OpenRouter as last resort (text-only, non-sensitive) */
-          if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
-            try {
-              await fallbackToOpenRouter(geminiErr);
-              return;
-            } catch (_) { /* fall through to final error */ }
-          }
-          throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit) \u2014 try a shorter message, or clear Memory / start a new conversation.');
+          throw new Error(gFail + ' Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit). Try a shorter message, or clear Memory / start a new conversation.');
         }
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
       }
@@ -1965,6 +1950,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             busy = false;
             updateSendDisabled();
             setStatus('online', '');
+            reply = stripThinkingLeaks(reply);
             flushDisplay();
             if (reply.trim()) {
               writeEvEntry(ctx.entryRef, { role: 'ev', text: reply.trim(), sensitive: !!ctx.sensitive, provider: usedLabel });
@@ -1987,7 +1973,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               token(cleaned);
               markFallbackNote('gemini \u00b7 fallback', 'Groq is rate-limited \u2014 answered by Gemini instead');
               succeededProvider = 'gemini';
-              writeEvEntry(ctx.entryRef, { role: 'ev', text: cleaned, sensitive: !!ctx.sensitive, provider: usedLabel });
+              writeEvEntry(ctx.entryRef, { role: 'ev', text: stripThinkingLeaks(cleaned), sensitive: !!ctx.sensitive, provider: usedLabel });
               busy = false;
               updateSendDisabled();
               setStatus('online', '');
@@ -2011,6 +1997,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             busy = false;
             updateSendDisabled();
             setStatus('online', '');
+            reply = stripThinkingLeaks(reply);
             flushDisplay();
             if (reply.trim()) {
               writeEvEntry(ctx.entryRef, { role: 'ev', text: reply.trim(), sensitive: !!ctx.sensitive, provider: usedLabel });
@@ -2035,7 +2022,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               const note = curHasPdf ? 'Groq can\u2019t read PDFs \u2014 answered by Gemini instead' : 'Groq can\u2019t fit this request \u2014 answered by Gemini instead';
               markFallbackNote('gemini \u00b7 fallback', note);
               succeededProvider = 'gemini';
-              writeEvEntry(ctx.entryRef, { role: 'ev', text: cleaned, sensitive: !!ctx.sensitive, provider: usedLabel });
+              writeEvEntry(ctx.entryRef, { role: 'ev', text: stripThinkingLeaks(cleaned), sensitive: !!ctx.sensitive, provider: usedLabel });
               busy = false;
               updateSendDisabled();
               setStatus('online', '');
@@ -2062,6 +2049,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   busy = false;
   updateSendDisabled();
   setStatus('online', '');
+  reply = stripThinkingLeaks(reply);
   flushDisplay();
   const cleaned = reply.trim();
   if (!cleaned) { failThis('E.V received nothing back. Try again.'); return; }
