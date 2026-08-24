@@ -127,7 +127,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v75';
+const APP_VERSION = 'v76';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1839,7 +1839,6 @@ async function performReply(bubble, ctx, autoRetryLeft) {
 
   const fallbackToGroq = async (geminiErr) => {
     const gFail = geminiFailure(geminiErr);
-    toast('[fallback] rateLimited=' + geminiErr.rateLimited + ' dailyQuota=' + geminiErr.dailyQuota + ' orKey=' + JSON.stringify(settings.openrouterKey).slice(0, 8) + ' sensitive=' + ctx.sensitive + ' private=' + privateMode);
     if (!settings.groqKey) {
       if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasPdf && !curHasImage) {
         await fallbackToOpenRouter(geminiErr);
@@ -2470,6 +2469,8 @@ function startNewConversation() {
   conversationSummary = '';
   saveJSON(STORAGE.conversationSummary, conversationSummary);
   lastSummaryLen = 0;
+  privateMode = false;
+  saveJSON(STORAGE.privateMode, privateMode);
   freshConversation = true;
   clearSystemCache();
   setPendingAttachments([]);
