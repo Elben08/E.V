@@ -127,7 +127,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v77';
+const APP_VERSION = 'v78';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1964,6 +1964,13 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             await fallbackToOpenRouter(err);
             busy = false;
             updateSendDisabled();
+            setStatus('online', '');
+            flushDisplay();
+            if (reply.trim()) {
+              writeEvEntry(ctx.entryRef, { role: 'ev', text: reply.trim(), sensitive: !!ctx.sensitive, provider: usedLabel });
+              extractFacts(ctx.userText);
+            }
+            freshConversation = false;
             return;
           } catch (orErr) {
             if (orErr.bothRateLimited) { await autoRetryRateLimit(orErr); return; }
@@ -1983,6 +1990,10 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               writeEvEntry(ctx.entryRef, { role: 'ev', text: cleaned, sensitive: !!ctx.sensitive, provider: usedLabel });
               busy = false;
               updateSendDisabled();
+              setStatus('online', '');
+              flushDisplay();
+              extractFacts(ctx.userText);
+              freshConversation = false;
               return;
             }
           } catch (gemErr) {
@@ -1999,6 +2010,13 @@ async function performReply(bubble, ctx, autoRetryLeft) {
             await fallbackToOpenRouter(err);
             busy = false;
             updateSendDisabled();
+            setStatus('online', '');
+            flushDisplay();
+            if (reply.trim()) {
+              writeEvEntry(ctx.entryRef, { role: 'ev', text: reply.trim(), sensitive: !!ctx.sensitive, provider: usedLabel });
+              extractFacts(ctx.userText);
+            }
+            freshConversation = false;
             return;
           } catch (orErr) {
             openrouterFailed = true;
@@ -2020,6 +2038,10 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               writeEvEntry(ctx.entryRef, { role: 'ev', text: cleaned, sensitive: !!ctx.sensitive, provider: usedLabel });
               busy = false;
               updateSendDisabled();
+              setStatus('online', '');
+              flushDisplay();
+              extractFacts(ctx.userText);
+              freshConversation = false;
               return;
             }
           } catch (gemErr) {
