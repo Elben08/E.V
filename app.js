@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v71';
+const APP_VERSION = 'v72';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -698,6 +698,7 @@ function chooseProvider(analysis, text) {
   const groqOk = !!settings.groqKey;
   const geminiOk = !!settings.geminiKey;
   const liveInfo = text && needsLiveInfo(text);
+  if (freshConversation && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'fresh' };
   if (p === 'gemini') return { provider: 'gemini', reason: '' };
   if (p === 'groq') {
     if (liveInfo && geminiOk && !isProviderOut('gemini')) return { provider: 'gemini', reason: 'live-info' };
@@ -2544,7 +2545,10 @@ function init() {
 
   /* ---- Navigation ---- */
   document.querySelectorAll('.dash-card[data-target]').forEach((card) => {
-    card.addEventListener('click', () => { navigateTo(card.dataset.target); });
+    card.addEventListener('click', () => {
+      if (card.dataset.target === 'chat') freshConversation = true;
+      navigateTo(card.dataset.target);
+    });
   });
   el['btn-ask-now'].addEventListener('click', () => { navigateTo('chat'); });
   el['btn-history-edit'].addEventListener('click', toggleHistoryEdit);
