@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v70';
+const APP_VERSION = 'v71';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -159,6 +159,7 @@ let privateMode = loadJSON(STORAGE.privateMode, false);
 let conversationSummary = loadJSON(STORAGE.conversationSummary, '');
 let summarizing = false;
 let lastSummaryLen = 0;
+let freshConversation = false;
 const MAX_ATTACHMENTS = 5;
 const MAX_IMG_MB = 7;
 const MAX_PDF_MB = 20;
@@ -752,6 +753,7 @@ function buildSystem(provider) {
     out += '\n\nFacts about the user:\n' + list;
   }
   if (privateMode) out += '\n\n[PRIVATE SESSION ACTIVE] The user asked to keep this conversation private. Do not mention this mode unless asked.';
+  if (freshConversation) out += '\n\n[Fresh conversation] The user started a new conversation. Do not proactively reference earlier facts about the user or prior conversation topics unless they are directly relevant to the current question. Answer the current question on its own terms.';
   _systemCache[cacheKey] = out;
   return out;
 }
@@ -2034,6 +2036,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   bubble.querySelector('.tag').innerHTML = 'E.V <span class="provider">(' + usedLabel + ')</span>';
   writeEvEntry(ctx.entryRef, { role: 'ev', text: cleaned, sensitive: !!ctx.sensitive, provider: usedLabel });
   extractFacts(ctx.userText);
+  freshConversation = false;
   if (succeededProvider) maybeSummarizeHistory(succeededProvider).catch(() => {});
   if (ctx.clearAttachmentsOnSuccess) setPendingAttachments([]);
   if (settings.voice) speak(cleaned);
@@ -2459,6 +2462,7 @@ function startNewConversation() {
   conversationSummary = '';
   saveJSON(STORAGE.conversationSummary, conversationSummary);
   lastSummaryLen = 0;
+  freshConversation = true;
   clearSystemCache();
   setPendingAttachments([]);
   el.chat.innerHTML = '';
