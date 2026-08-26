@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v80';
+const APP_VERSION = 'v81';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -947,8 +947,9 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
         /* daily per-model cap (20 req/day): skip the ~18s recover loop and rotate to the next model */
         if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', 86400000); break; }
         if (await recover(model)) { setActiveModel('gemini', i); return; }
+        /* per-minute rate-limit: all models share the same API key/quota — don't waste ~18s trying the rest */
         lastErr = e;
-        continue;
+        break;
       }
       lastErr = e;
       /* When liveInfo is true, keep tools (googleSearch) — don't strip them in recovery,
@@ -1921,6 +1922,14 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     } catch (err) {
       if (curHasPdf) {
         failThis('Gemini couldn\u2019t process this PDF \u2014 all models unavailable or rate-limited. Try again later or use a shorter message.');
+        return;
+      }
+      /* live-info queries (weather, news, stocks, etc.) need Gemini\u2019s googleSearch — Groq/OpenRouter can\u2019t do web search, so falling back gives a useless \u201cI have no internet\u201d reply. Show a clear error instead. */
+      if (needsLiveInfo(ctx.userText)) {
+        const hint = err.rateLimited
+          ? 'Gemini is temporarily rate-limited (' + (err.detail || 'quota reached') + ').' + rateHint(err.detail)
+          : 'Gemini is temporarily unavailable (' + err.message + ').';
+        failThis('Live data requires Gemini \u2014 ' + hint + ' Try again in a few minutes.');
         return;
       }
       try {
