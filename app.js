@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v81';
+const APP_VERSION = 'v82';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -160,6 +160,8 @@ let conversationSummary = loadJSON(STORAGE.conversationSummary, '');
 let summarizing = false;
 let lastSummaryLen = 0;
 let freshConversation = false;
+const GEMINI_COOLDOWN_MS = 2000;
+let geminiCooldownUntil = 0;
 const MAX_ATTACHMENTS = 5;
 const MAX_IMG_MB = 7;
 const MAX_PDF_MB = 20;
@@ -435,7 +437,9 @@ async function maybeSummarizeHistory(providerSucceeded) {
     }
     if (cur.length) chunks.push(cur.join('\n'));
     let rolling = conversationSummary;
-    const provider = providerSucceeded === 'groq' ? 'groq' : (providerSucceeded === 'openrouter' && settings.openrouterKey ? 'openrouter' : 'gemini');
+    /* summaries compress old turns — they don\u2019t need Gemini\u2019s web search and must not run concurrently
+       with the next message\u2019s Gemini request (which would cause rate-limiting). Always prefer Groq/OpenRouter. */
+    const provider = settings.groqKey ? 'groq' : (settings.openrouterKey ? 'openrouter' : 'gemini');
     for (const chunk of chunks) {
       const content = (rolling ? 'Previous summary:\n' + rolling + '\n\n' : '') + chunk;
       rolling = await summarizeOnce(provider, content);
@@ -834,6 +838,9 @@ async function readSSE(response, onData, onError) {
 }
 
 async function sendToGemini(messages, onToken, liveInfo, noRecover) {
+  /* enforce minimum gap between Gemini requests to avoid hammering the API */
+  const cooldownLeft = geminiCooldownUntil - Date.now();
+  if (cooldownLeft > 0) await sleep(cooldownLeft);
   const key = encodeURIComponent(settings.geminiKey);
   const headers = { 'Content-Type': 'application/json' };
   const body = {
@@ -1919,6 +1926,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, true);
       succeededProvider = 'gemini';
       clearProviderOut('gemini');
+      geminiCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS;
     } catch (err) {
       if (curHasPdf) {
         failThis('Gemini couldn\u2019t process this PDF \u2014 all models unavailable or rate-limited. Try again later or use a shorter message.');
@@ -1935,7 +1943,12 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       try {
         await fallbackToGroq(err);
       } catch (err2) {
-        if (err2.bothRateLimited) { await autoRetryRateLimit(err2); return; }
+        /* Gemini + Groq both rate-limited: auto-retry would just re-fire the same Gemini model iteration (~9 calls)
+           and hit the same 429 again. Fail immediately with a clear message instead of wasting ~27 API calls. */
+        if (err2.bothRateLimited) {
+          failThis(err2.message + rateHint(err2.detail));
+          return;
+        }
         failThis(err2.message);
         return;
       }
