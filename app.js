@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v85';
+const APP_VERSION = 'v86';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -325,8 +325,8 @@ function geminiFailureLabel(err, label) {
     return who + '\u2019s free tier is under heavy load right now (' + d.slice(0, 140) + ').' + RATE_HINT_CAPACITY;
   }
   if (isDailyQuotaError(d)) {
-    return who + '\u2019s daily free-tier quota is reached (' + d.slice(0, 140)
-      + '). It applies to the whole Google project \u2014 check AI Studio for other consumers \u2014 and resets at midnight Pacific, about '
+    return who + '\u2019s daily free-tier quota for this model is reached (' + d.slice(0, 140)
+      + '). Free-tier quotas are per model \u2014 E.V will try the other Gemini models \u2014 and the cap resets at midnight Pacific, about '
       + shortClockTime(nextMidnightPacificEpoch()) + ' your time.';
   }
   return who + ' is temporarily rate-limited (' + (d || 'quota reached') + ').' + rateHint(d);
@@ -678,7 +678,7 @@ function nextMidnightPacificEpoch() {
   const v = (t) => parseInt(((parts.find((p) => p.type === t) || {}).value), 10) || 0;
   const y = v('year'), mo = v('month') - 1, d = v('day'), h = v('hour') % 24;
   const offset = now - Date.UTC(y, mo, d, h, v('minute'), v('second'));
-  return Date.UTC(y, mo, d + 1, 0, 0, 0) - offset;
+  return Date.UTC(y, mo, d + 1, 0, 0, 0) + offset;
 }
 
 function shortClockTime(ts) {
@@ -1027,14 +1027,18 @@ async function sendToGemini(messages, onToken, liveInfo) {
   let lastErr = null;
   let capacityHits = 0;
   let rateLimitHits = 0;
-  for (let i = start; i < GEMINI_MODELS.length; i++) {
-    const model = GEMINI_MODELS[i].id;
+  let dailyHits = 0;
+  /* Wrap around the list starting at the active model so every Gemini model gets a shot —
+     the active/pinned model must not prevent the others (incl. ones before it) from being tried. */
+  for (let n = 0; n < GEMINI_MODELS.length; n++) {
+    const model = GEMINI_MODELS[(start + n) % GEMINI_MODELS.length].id;
     try {
       await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
     } catch (e) {
       if (e.rateLimited) {
-        /* daily per-model cap (20 req/day): skip the rest of today (midnight-Pacific reset) */
-        if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', null, nextMidnightPacificEpoch()); break; }
+        /* daily per-model cap (20 req/day): the next model has its own daily quota, so try it.
+           Only if EVERY model is daily-capped is the whole provider marked out until midnight Pacific. */
+        if (e.dailyQuota) { lastErr = e; dailyHits++; continue; }
         /* free-tier capacity (not enough resources): model-specific — try the next model,
            which may have capacity even when this one doesn't */
         if (isCapacityError(e.detail)) { lastErr = e; capacityHits++; continue; }
@@ -1058,7 +1062,7 @@ async function sendToGemini(messages, onToken, liveInfo) {
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
-              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; markProviderOut('gemini', null, nextMidnightPacificEpoch()); break; }
+              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; break; }
               if (isCapacityError(e2.detail)) { lastErr = e2; capacityHit = true; break; }
               /* per-minute 429 is per-model — try the next Gemini model instead of a recover burst */
               lastErr = e2;
@@ -1070,23 +1074,25 @@ async function sendToGemini(messages, onToken, liveInfo) {
             if (!/MALFORMED_FUNCTION_CALL/.test(e2.message)) throw e2;
           }
         }
-        if (dailyHit) continue;
+        if (dailyHit) { dailyHits++; continue; }
         if (capacityHit) { capacityHits++; continue; }
         if (rateHit) { rateLimitHits++; continue; }
-        if (recovered) { setActiveModel('gemini', i); return; }
+        if (recovered) { setActiveModel('gemini', (start + n) % GEMINI_MODELS.length); return; }
         if (isModelUnavailable(lastErr.message)) continue;
         throw lastErr;
       } else {
         continue;
       }
     }
-    setActiveModel('gemini', i);
+    setActiveModel('gemini', (start + n) % GEMINI_MODELS.length);
     return;
   }
   if (lastErr && lastErr.rateLimited) {
     /* capacity throttles clear in seconds: short 60s outage only if all models were throttled;
-       per-minute (all models) keeps the default 5-min OUTAGE_MS */
-    markProviderOut('gemini', capacityHits >= GEMINI_MODELS.length ? CAPACITY_OUTAGE_MS : undefined);
+       per-minute (all models) keeps the default 5-min OUTAGE_MS; only an all-models daily cap
+       blocks Gemini until the real midnight-Pacific reset (daily quota is per model) */
+    if (dailyHits >= GEMINI_MODELS.length) markProviderOut('gemini', null, nextMidnightPacificEpoch());
+    else markProviderOut('gemini', capacityHits >= GEMINI_MODELS.length ? CAPACITY_OUTAGE_MS : undefined);
     throw lastErr;
   }
   throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
@@ -1191,6 +1197,7 @@ async function sendToOpenRouter(messages, onToken, startIndex, maxTokens) {
     } catch (e) {
       if (e.rateLimited) { lastErr = e; continue; }
       if (e.tooLarge) throw e;
+      if (e.emptyReply) { lastErr = e; continue; }
       lastErr = e;
       if (!isModelUnavailable(e.message)) throw e;
       continue;
@@ -1261,15 +1268,23 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
     if (isTooLargeError(g.msg)) throw rateLimitedError(g.msg, g.delay);
     throw new Error(g.msg);
   }
+  let received = false;
   try {
     await readSSE(res, (j) => {
       if (j && typeof j.model === 'string' && j.model) lastOpenRouterModel = j.model;
       const d = j.choices && j.choices[0] && j.choices[0].delta;
       if (!d || d.reasoning_content) return;
-      if (typeof d.content === 'string' && d.content) onToken(d.content);
+      if (typeof d.content === 'string' && d.content) { received = true; onToken(d.content); }
     }, (err) => {
       throw new Error((err && err.message) || 'OpenRouter stream error');
     }, ctrl.signal);
+    /* Some :free models (e.g. nemotron) stream a clean 200 with zero text — treat that as a
+       failed attempt so sendToOpenRouter can move to the next model instead of replying nothing. */
+    if (!received) {
+      const empty = new Error('OpenRouter model ' + model + ' returned an empty response (free models sometimes yield no text)');
+      empty.emptyReply = true;
+      throw empty;
+    }
   } catch (e) {
     if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
     throw e;
