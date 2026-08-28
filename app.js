@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v84';
+const APP_VERSION = 'v85';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -421,7 +421,7 @@ async function summarizeOnce(provider, content) {
       if (!settings.geminiKey) throw new Error('no Gemini key');
       await sendToGemini([
         { role: 'user', parts: [{ text: SUMMARY_PROMPT + 'Conversation so far:\n' + content + '\n\nProduce the summary now.' }] }
-      ], collect, false, true);
+      ], collect, false);
     }
     return acc.join('').trim();
   };
@@ -877,15 +877,23 @@ function buildMessages(provider, userText, attachments, hist) {
   return messages;
 }
 
-async function readSSE(response, onData, onError) {
+const STALL_MS = 60000;
+
+/* SSE read loop shared by all three providers. Ends on stream close OR the terminal `[DONE]`
+   event (some free-model endpoints keep the socket open after [DONE] — previously that hung E.V
+   in "thinking" forever). A 60s inactivity watchdog aborts the fetch (signal) so a stalled or
+   keep-alive-only stream fails fast into the normal error path instead of hanging. */
+async function readSSE(response, onData, onError, signal) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let ended = false;
   const handleLine = (rawLine) => {
     const line = rawLine.trim();
     if (line.indexOf('data:') !== 0) return;
     const payload = line.slice(5).trim();
-    if (!payload || payload === '[DONE]') return;
+    if (!payload) return;
+    if (payload === '[DONE]') { ended = true; return; }
     try {
       const json = JSON.parse(payload);
       if (json && json.error) {
@@ -895,22 +903,37 @@ async function readSSE(response, onData, onError) {
       onData(json);
     } catch (e) { /* skip partial */ }
   };
+  const stallError = () => new Error('Network stalled \u2014 no data for ' + (STALL_MS / 1000) + 's');
   for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    if (ended) break;
+    let timer = null;
+    if (signal) timer = setTimeout(() => signal.abort(), STALL_MS);
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      if (signal && signal.aborted) throw stallError();
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
     let idx;
     while ((idx = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
       handleLine(line);
+      if (ended) break;
     }
   }
-  buffer += decoder.decode();
-  if (buffer.trim()) handleLine(buffer);
+  if (!ended) {
+    buffer += decoder.decode();
+    if (buffer.trim()) handleLine(buffer);
+  }
 }
 
-async function sendToGemini(messages, onToken, liveInfo, noRecover) {
+async function sendToGemini(messages, onToken, liveInfo) {
   /* enforce minimum gap between Gemini requests to avoid hammering the API */
   const cooldownLeft = geminiCooldownUntil - Date.now();
   if (cooldownLeft > 0) await sleep(cooldownLeft);
@@ -954,12 +977,14 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
   const attempt = async (model, endpoint, useTools) => {
     const b = JSON.parse(JSON.stringify(body));
     if (!useTools) delete b.tools;
+    const ctrl = new AbortController();
     const base = 'https://generativelanguage.googleapis.com/v1beta/models/' + model;
     const sep = endpoint.indexOf('?') !== -1 ? '&' : '?';
     const res = await fetch(base + ':' + endpoint + sep + 'key=' + key, {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify(b)
+      body: JSON.stringify(b),
+      signal: ctrl.signal
     });
     if (res.status === 429) throw await rateLimitError(res);
     if (!res.ok) throw new Error(await geminiError(res));
@@ -986,10 +1011,10 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
         }
       }, (err) => {
         throw new Error((err && err.message) || 'Gemini stream error');
-      });
+      }, ctrl.signal);
       if (!streamed) throw emptyReplyError(finishReason, blockReason);
     } else {
-      const json = await res.json();
+      const json = await Promise.race([res.json(), new Promise((_, rej) => setTimeout(() => rej(new Error('Gemini respond timed out')), STALL_MS))]);
       const cand = json.candidates && json.candidates[0];
       const parts = cand && cand.content ? cand.content.parts : [];
       const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
@@ -998,42 +1023,26 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     }
   };
 
-  const recoverFromRateLimit = async (model) => {
-    for (let t = 1; t <= 2; t++) {
-      await sleep(2000 * t);
-      try {
-        await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
-        return true;
-      } catch (e2) {
-        if (!e2.rateLimited) return false;
-      }
-    }
-    return false;
-  };
-
-  const recover = async (model) => {
-    if (noRecover) return false;
-    return recoverFromRateLimit(model);
-  };
-
   const start = clampModelIndex(GEMINI_MODELS, activeModels.gemini);
   let lastErr = null;
   let capacityHits = 0;
+  let rateLimitHits = 0;
   for (let i = start; i < GEMINI_MODELS.length; i++) {
     const model = GEMINI_MODELS[i].id;
     try {
       await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
     } catch (e) {
       if (e.rateLimited) {
-        /* daily per-model cap (20 req/day): skip the ~18s recover loop and rotate to the next model */
+        /* daily per-model cap (20 req/day): skip the rest of today (midnight-Pacific reset) */
         if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', null, nextMidnightPacificEpoch()); break; }
-        /* free-tier capacity (not enough resources): model-specific — skip recover, try the next model,
+        /* free-tier capacity (not enough resources): model-specific — try the next model,
            which may have capacity even when this one doesn't */
         if (isCapacityError(e.detail)) { lastErr = e; capacityHits++; continue; }
-        if (await recover(model)) { setActiveModel('gemini', i); return; }
-        /* per-minute rate-limit: all models share the same API key/quota — don't waste ~18s trying the rest */
+        /* per-minute 429 is per-model too (PerProjectPerModel quota) — skip the old ~6s recover
+           burst and try the next model; it likely has its own fresh lane */
         lastErr = e;
-        break;
+        rateLimitHits++;
+        continue;
       }
       lastErr = e;
       /* When liveInfo is true, keep tools (googleSearch) — don't strip them in recovery,
@@ -1042,6 +1051,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
         let recovered = false;
         let dailyHit = false;
         let capacityHit = false;
+        let rateHit = false;
         for (let r = 0; r < 3 && !recovered; r++) {
           try {
             await attempt(model, 'generateContent', liveInfo);
@@ -1050,8 +1060,9 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
             if (e2.rateLimited) {
               if (e2.dailyQuota) { lastErr = e2; dailyHit = true; markProviderOut('gemini', null, nextMidnightPacificEpoch()); break; }
               if (isCapacityError(e2.detail)) { lastErr = e2; capacityHit = true; break; }
-              if (await recover(model)) { setActiveModel('gemini', i); return; }
+              /* per-minute 429 is per-model — try the next Gemini model instead of a recover burst */
               lastErr = e2;
+              rateHit = true;
               break;
             }
             lastErr = e2;
@@ -1061,6 +1072,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
         }
         if (dailyHit) continue;
         if (capacityHit) { capacityHits++; continue; }
+        if (rateHit) { rateLimitHits++; continue; }
         if (recovered) { setActiveModel('gemini', i); return; }
         if (isModelUnavailable(lastErr.message)) continue;
         throw lastErr;
@@ -1072,7 +1084,8 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     return;
   }
   if (lastErr && lastErr.rateLimited) {
-    /* capacity throttle clears in seconds; only the all-models-throttled case uses a short outage */
+    /* capacity throttles clear in seconds: short 60s outage only if all models were throttled;
+       per-minute (all models) keeps the default 5-min OUTAGE_MS */
     markProviderOut('gemini', capacityHits >= GEMINI_MODELS.length ? CAPACITY_OUTAGE_MS : undefined);
     throw lastErr;
   }
@@ -1105,6 +1118,7 @@ async function sendToGroq(messages, onToken, startIndex, maxTokens) {
 }
 
 async function groqAttempt(model, messages, onToken, maxTokens) {
+  const ctrl = new AbortController();
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -1117,7 +1131,8 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
       temperature: 0.7,
       max_tokens: maxTokens || 8192,
       stream: true
-    })
+    }),
+    signal: ctrl.signal
   });
   const groqDetail = async (r) => {
     let msg = 'HTTP ' + r.status;
@@ -1157,7 +1172,7 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
       if (typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
       throw new Error((err && err.message) || 'Groq stream error');
-    });
+    }, ctrl.signal);
   } catch (e) {
     if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
     throw e;
@@ -1191,6 +1206,7 @@ async function sendToOpenRouter(messages, onToken, startIndex, maxTokens) {
 }
 
 async function openRouterAttempt(model, messages, onToken, maxTokens) {
+  const ctrl = new AbortController();
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -1205,7 +1221,8 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
       temperature: 0.7,
       max_tokens: maxTokens || 8192,
       stream: true
-    })
+    }),
+    signal: ctrl.signal
   });
   const orDetail = async (r) => {
     let msg = 'HTTP ' + r.status;
@@ -1252,7 +1269,7 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
       if (typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
       throw new Error((err && err.message) || 'OpenRouter stream error');
-    });
+    }, ctrl.signal);
   } catch (e) {
     if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
     throw e;
@@ -2083,7 +2100,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
@@ -2131,7 +2148,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), false, true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), false);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
