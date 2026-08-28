@@ -114,6 +114,7 @@ const STORAGE = {
   groqModel: 'ev.groqModel',
   openrouterModel: 'ev.openrouterModel',
   conversationSummary: 'ev.conversationSummary',
+  providerOut: 'ev.providerOut',
   sessions: 'ev.sessions'
 };
 
@@ -128,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v83';
+const APP_VERSION = 'v84';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -311,11 +312,28 @@ function rateLimitDelayMs(err) {
   return Math.min(Math.max(d, RATE_RETRY_DEFAULT_MS), RATE_RETRY_MAX_MS);
 }
 
-function friendlyRateLimit(label, err) {
-  if (err && err.detail && isCapacityError(err.detail)) {
-    return label + '\u2019s free tier is under heavy load right now (' + String(err.detail).slice(0, 140) + ').' + RATE_HINT_CAPACITY;
+/* Centralized Gemini 429 labeling: capacity vs daily quota vs per-minute rate limit. The daily case
+   names the real cause + the project-scoped quota + the midnight-Pacific reset in local time, so
+   "why is the quota reached?" needs no guessing. */
+function geminiFailureLabel(err, label) {
+  const who = label || 'Gemini';
+  const d = (err && err.detail) || '';
+  if (!err || !err.rateLimited) {
+    return who + ' error: ' + ((err && err.message) || 'unknown failure');
   }
-  return label + ' is rate-limited right now (' + (err && err.detail ? err.detail : 'quota reached') + '). Try again in a moment.';
+  if (isCapacityError(d)) {
+    return who + '\u2019s free tier is under heavy load right now (' + d.slice(0, 140) + ').' + RATE_HINT_CAPACITY;
+  }
+  if (isDailyQuotaError(d)) {
+    return who + '\u2019s daily free-tier quota is reached (' + d.slice(0, 140)
+      + '). It applies to the whole Google project \u2014 check AI Studio for other consumers \u2014 and resets at midnight Pacific, about '
+      + shortClockTime(nextMidnightPacificEpoch()) + ' your time.';
+  }
+  return who + ' is temporarily rate-limited (' + (d || 'quota reached') + ').' + rateHint(d);
+}
+
+function friendlyRateLimit(label, err) {
+  return geminiFailureLabel(err, label);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -606,22 +624,65 @@ let lastOpenRouterModel = '';
 
 const OUTAGE_MS = 300000;
 const CAPACITY_OUTAGE_MS = 60000;
-let providerOut = {};
-let providerOutMs = {};
+/* Provider outages persist to localStorage ({ name: { start, ms, until } }) so a reopen or
+   SW-update reload no longer forgets a same-day-exhausted provider (e.g. Gemini daily quota). */
+let providerOut = loadJSON(STORAGE.providerOut, {});
+pruneProviderOut();
 
-function isProviderOut(provider) {
-  const t = providerOut[provider];
-  return !!t && Date.now() - t < (providerOutMs[provider] || OUTAGE_MS);
+function pruneProviderOut() {
+  const now = Date.now();
+  for (const p of Object.keys(providerOut)) {
+    const o = providerOut[p];
+    const out = o.until ? now < o.until : now - o.start < (o.ms || OUTAGE_MS);
+    if (!out) delete providerOut[p];
+  }
 }
 
-function markProviderOut(provider, ms) {
-  providerOut[provider] = Date.now();
-  if (ms) providerOutMs[provider] = ms;
+function saveProviderOut() {
+  saveJSON(STORAGE.providerOut, providerOut);
+}
+
+function isProviderOut(provider) {
+  const o = providerOut[provider];
+  if (!o) return false;
+  const now = Date.now();
+  if (o.until) return now < o.until;
+  return now - o.start < (o.ms || OUTAGE_MS);
+}
+
+function markProviderOut(provider, ms, until) {
+  providerOut[provider] = { start: Date.now() };
+  if (ms) providerOut[provider].ms = ms;
+  if (until) providerOut[provider].until = until;
+  saveProviderOut();
 }
 
 function clearProviderOut(provider) {
   delete providerOut[provider];
-  delete providerOutMs[provider];
+  saveProviderOut();
+}
+
+/* Google's daily (RPD) quota resets at midnight Pacific, NOT local midnight. Return the epoch of the
+   next America/Los_Angeles 00:00 so a daily-quota outage expires exactly at the real reset. */
+function nextMidnightPacificEpoch() {
+  const now = Date.now();
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).formatToParts(now);
+  } catch (e) {
+    return now + OUTAGE_MS;
+  }
+  const v = (t) => parseInt(((parts.find((p) => p.type === t) || {}).value), 10) || 0;
+  const y = v('year'), mo = v('month') - 1, d = v('day'), h = v('hour') % 24;
+  const offset = now - Date.UTC(y, mo, d, h, v('minute'), v('second'));
+  return Date.UTC(y, mo, d + 1, 0, 0, 0) - offset;
+}
+
+function shortClockTime(ts) {
+  return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function modelList(provider) {
@@ -965,7 +1026,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     } catch (e) {
       if (e.rateLimited) {
         /* daily per-model cap (20 req/day): skip the ~18s recover loop and rotate to the next model */
-        if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', 86400000); break; }
+        if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', null, nextMidnightPacificEpoch()); break; }
         /* free-tier capacity (not enough resources): model-specific — skip recover, try the next model,
            which may have capacity even when this one doesn't */
         if (isCapacityError(e.detail)) { lastErr = e; capacityHits++; continue; }
@@ -987,7 +1048,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
-              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; markProviderOut('gemini', 86400000); break; }
+              if (e2.dailyQuota) { lastErr = e2; dailyHit = true; markProviderOut('gemini', null, nextMidnightPacificEpoch()); break; }
               if (isCapacityError(e2.detail)) { lastErr = e2; capacityHit = true; break; }
               if (await recover(model)) { setActiveModel('gemini', i); return; }
               lastErr = e2;
@@ -1288,6 +1349,12 @@ function renderHistory() {
     } else if (h.failed) {
       const div = addMsg('ev', h.errorMsg || h.text, h.provider ? { provider: h.provider } : undefined);
       div.classList.add('error');
+      if (h.failedAt) {
+        const t = document.createElement('span');
+        t.className = 'fail-time';
+        t.textContent = '\u00b7 ' + new Date(h.failedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(h.failedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        div.appendChild(t);
+      }
       const btn = document.createElement('button');
       btn.className = 'retry-btn';
       btn.textContent = '\u21bb Retry';
@@ -1789,7 +1856,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
 
   const failThis = (msg) => {
     writeEvEntry(ctx.entryRef, {
-      role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, errorMsg: msg,
+      role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, failedAt: Date.now(), errorMsg: msg,
       provider: usedLabel, retryUserText: ctx.userText, retryProvider: ctx.provider, retryReason: ctx.reason
     });
     if (handsFreeActive) updateVoiceTranscript(msg);
@@ -1802,7 +1869,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     const detail = (err && err.detail) ? ' (' + String(err.detail).slice(0, 140) + ')' : '';
     const msg = 'E.V hit a rate limit' + detail + '. Retrying automatically in ' + Math.ceil(delayMs / 1000) + 's\u2026';
     writeEvEntry(ctx.entryRef, {
-      role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, errorMsg: err.message || '',
+      role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, failedAt: Date.now(), errorMsg: err.message || '',
       provider: usedLabel, retryUserText: ctx.userText, retryProvider: ctx.provider, retryReason: ctx.reason
     });
     if (handsFreeActive) updateVoiceTranscript(msg);
@@ -1934,9 +2001,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
         throw new Error(gFail + ' \u2014 Groq also failed: ' + err.message);
       }
     }
-    markFallbackNote('groq · fallback · ' + getActiveModel('groq'), geminiErr.rateLimited
-      ? 'Gemini is temporarily rate-limited (' + (geminiErr.detail || 'quota reached') + ')'
-      : 'Gemini error: ' + geminiErr.message);
+    markFallbackNote('groq · fallback · ' + getActiveModel('groq'), geminiFailureLabel(geminiErr) + ' (' + shortClockTime(Date.now()) + ')');
     succeededProvider = 'groq';
     clearProviderOut('groq');
   };
@@ -1954,16 +2019,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       }
       /* live-info queries (weather, news, stocks, etc.) need Gemini\u2019s googleSearch — Groq/OpenRouter can\u2019t do web search, so falling back gives a useless \u201cI have no internet\u201d reply. Show a clear error instead. */
       if (needsLiveInfo(ctx.userText)) {
-        let hint;
-        if (err.rateLimited) {
-          if (isCapacityError(err.detail)) {
-            hint = 'Gemini\u2019s free tier is under heavy load right now (' + (err.detail || 'not enough resources') + ').' + RATE_HINT_CAPACITY;
-          } else {
-            hint = 'Gemini is temporarily rate-limited (' + (err.detail || 'quota reached') + ').' + rateHint(err.detail);
-          }
-        } else {
-          hint = 'Gemini is temporarily unavailable (' + err.message + ').';
-        }
+        const hint = err.rateLimited
+          ? geminiFailureLabel(err)
+          : 'Gemini is temporarily unavailable (' + err.message + ').';
         failThis('Live data requires Gemini \u2014 ' + hint + ' Try again in a moment.');
         return;
       }

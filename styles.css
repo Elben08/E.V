@@ -261,6 +261,15 @@ body::after {
   word-break: break-word;
 }
 
+.msg .fail-time {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
 .typing-dots span {
   display: inline-block;
   width: 6px; height: 6px;
