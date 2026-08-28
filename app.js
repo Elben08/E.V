@@ -128,7 +128,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v82';
+const APP_VERSION = 'v83';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -280,8 +280,16 @@ function isDailyQuotaError(detail) {
   return /daily|quota exceeded|exceeded.*quota|free_tier_requests|per day\b|resets? at midnight|purchased credits|free.*credits|RPD/i.test(detail || '');
 }
 
+/* Gemini free tier returns 429 RESOURCE_EXHAUSTED with body text like "not enough resources to fulfill
+   the request" when its servers are under load. That's capacity throttling — NOT the user's per-minute
+   or daily quota — and it's model-specific, so another Gemini model may still answer. */
+function isCapacityError(detail) {
+  return /not enough resources|temporary condition|unavailable for traffic|request could not be processed|overloaded/i.test(detail || '');
+}
+
 const RATE_HINT_PER_MINUTE = ' This usually clears in a minute \u2014 if it persists, check your free-tier quota.';
 const RATE_HINT_DAILY = ' This is a daily free-tier cap \u2014 it resets at midnight, or switch to a different model/provider.';
+const RATE_HINT_CAPACITY = ' This is Gemini\u2019s free-tier capacity throttling \u2014 it usually clears in seconds. Try again in a moment, or ask a different question.';
 
 function rateHint(detail) {
   return isDailyQuotaError(detail) ? RATE_HINT_DAILY : RATE_HINT_PER_MINUTE;
@@ -304,6 +312,9 @@ function rateLimitDelayMs(err) {
 }
 
 function friendlyRateLimit(label, err) {
+  if (err && err.detail && isCapacityError(err.detail)) {
+    return label + '\u2019s free tier is under heavy load right now (' + String(err.detail).slice(0, 140) + ').' + RATE_HINT_CAPACITY;
+  }
   return label + ' is rate-limited right now (' + (err && err.detail ? err.detail : 'quota reached') + '). Try again in a moment.';
 }
 
@@ -594,6 +605,7 @@ let activeModels = {
 let lastOpenRouterModel = '';
 
 const OUTAGE_MS = 300000;
+const CAPACITY_OUTAGE_MS = 60000;
 let providerOut = {};
 let providerOutMs = {};
 
@@ -945,6 +957,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
 
   const start = clampModelIndex(GEMINI_MODELS, activeModels.gemini);
   let lastErr = null;
+  let capacityHits = 0;
   for (let i = start; i < GEMINI_MODELS.length; i++) {
     const model = GEMINI_MODELS[i].id;
     try {
@@ -953,6 +966,9 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
       if (e.rateLimited) {
         /* daily per-model cap (20 req/day): skip the ~18s recover loop and rotate to the next model */
         if (e.dailyQuota) { lastErr = e; markProviderOut('gemini', 86400000); break; }
+        /* free-tier capacity (not enough resources): model-specific — skip recover, try the next model,
+           which may have capacity even when this one doesn't */
+        if (isCapacityError(e.detail)) { lastErr = e; capacityHits++; continue; }
         if (await recover(model)) { setActiveModel('gemini', i); return; }
         /* per-minute rate-limit: all models share the same API key/quota — don't waste ~18s trying the rest */
         lastErr = e;
@@ -964,6 +980,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
       if (!isModelUnavailable(e.message)) {
         let recovered = false;
         let dailyHit = false;
+        let capacityHit = false;
         for (let r = 0; r < 3 && !recovered; r++) {
           try {
             await attempt(model, 'generateContent', liveInfo);
@@ -971,6 +988,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
           } catch (e2) {
             if (e2.rateLimited) {
               if (e2.dailyQuota) { lastErr = e2; dailyHit = true; markProviderOut('gemini', 86400000); break; }
+              if (isCapacityError(e2.detail)) { lastErr = e2; capacityHit = true; break; }
               if (await recover(model)) { setActiveModel('gemini', i); return; }
               lastErr = e2;
               break;
@@ -981,6 +999,7 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
           }
         }
         if (dailyHit) continue;
+        if (capacityHit) { capacityHits++; continue; }
         if (recovered) { setActiveModel('gemini', i); return; }
         if (isModelUnavailable(lastErr.message)) continue;
         throw lastErr;
@@ -992,7 +1011,8 @@ async function sendToGemini(messages, onToken, liveInfo, noRecover) {
     return;
   }
   if (lastErr && lastErr.rateLimited) {
-    markProviderOut('gemini');
+    /* capacity throttle clears in seconds; only the all-models-throttled case uses a short outage */
+    markProviderOut('gemini', capacityHits >= GEMINI_MODELS.length ? CAPACITY_OUTAGE_MS : undefined);
     throw lastErr;
   }
   throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
@@ -1934,10 +1954,17 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       }
       /* live-info queries (weather, news, stocks, etc.) need Gemini\u2019s googleSearch — Groq/OpenRouter can\u2019t do web search, so falling back gives a useless \u201cI have no internet\u201d reply. Show a clear error instead. */
       if (needsLiveInfo(ctx.userText)) {
-        const hint = err.rateLimited
-          ? 'Gemini is temporarily rate-limited (' + (err.detail || 'quota reached') + ').' + rateHint(err.detail)
-          : 'Gemini is temporarily unavailable (' + err.message + ').';
-        failThis('Live data requires Gemini \u2014 ' + hint + ' Try again in a few minutes.');
+        let hint;
+        if (err.rateLimited) {
+          if (isCapacityError(err.detail)) {
+            hint = 'Gemini\u2019s free tier is under heavy load right now (' + (err.detail || 'not enough resources') + ').' + RATE_HINT_CAPACITY;
+          } else {
+            hint = 'Gemini is temporarily rate-limited (' + (err.detail || 'quota reached') + ').' + rateHint(err.detail);
+          }
+        } else {
+          hint = 'Gemini is temporarily unavailable (' + err.message + ').';
+        }
+        failThis('Live data requires Gemini \u2014 ' + hint + ' Try again in a moment.');
         return;
       }
       try {
