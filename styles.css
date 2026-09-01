@@ -89,6 +89,23 @@ body::after {
   animation: globeSpin 80s linear infinite;
 }
 
+/* While a chatbot reply is streaming, drop the expensive animated/GPU background work so a
+   phone's weaker single-core CPU + GPU don't compete with every token's reflow (makes replies
+   feel slower to appear on mobile vs laptop). The globe stops spinning, the gradient stops
+   shifting, and glass panels fall back to solid (no backdrop blur). */
+body.reply-streaming::before {
+  animation: none;
+}
+body.reply-streaming .globe-svg {
+  animation: none;
+  opacity: 0.25;
+}
+body.reply-streaming {
+  --blur: 0;
+  --glass: rgba(10, 20, 36, 0.85);
+  --glass-strong: rgba(10, 18, 32, 0.92);
+}
+
 /* ---------- Screen container system ---------- */
 .screen {
   position: fixed;

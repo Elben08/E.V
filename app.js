@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v86';
+const APP_VERSION = 'v87';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -1301,6 +1301,13 @@ function throttledScroll() {
   requestAnimationFrame(() => { el.chat.scrollTop = el.chat.scrollHeight; _scrollPending = false; });
 }
 
+/* Pause the heavy animated background (globe spin, scan-lines, gradient shift) while a chatbot
+   reply is streaming — mobile single-core CPUs and weak GPUs otherwise share budget with every
+   token's reflow, making the reply feel slower to appear on a phone vs a laptop. */
+function setStreamingUI(on) {
+  document.body.classList.toggle('reply-streaming', !!on);
+}
+
 function setStatus(label, cls) {
   el['status-text'].textContent = label;
   el['status-dot'].className = 'status-dot' + (cls ? ' ' + cls : '');
@@ -1361,7 +1368,7 @@ function addMsg(role, text, opts) {
   }
   if (opts && opts.error) div.classList.add('error');
   el.chat.appendChild(div);
-  scrollChat();
+  throttledScroll();
   return div;
 }
 
@@ -1455,17 +1462,22 @@ function trimHistory() {
   if (history.length > 24) history = history.slice(history.length - 24);
 }
 
+/* Cache the chosen voice so getVoices() isn't re-run (and can't stall the main thread) on every
+   reply. Recompute only if the voice set may have changed (e.g. voicesload fired after a warm-up). */
+let _cachedVoice = null;
 function pickVoice() {
   if (!('speechSynthesis' in window)) return null;
+  if (_cachedVoice && _cachedVoice.voice) return _cachedVoice.voice;
   const voices = window.speechSynthesis.getVoices();
   const en = voices.filter((v) => v.lang && v.lang.toLowerCase().indexOf('en') === 0);
-  return (
+  const v =
     en.find((v) => /uk|gb/i.test(v.lang) && /male/i.test(v.name)) ||
     en.find((v) => /male/i.test(v.name)) ||
     en.find((v) => /uk|gb/i.test(v.lang)) ||
     en[0] ||
-    null
-  );
+    null;
+  _cachedVoice = { voice: v };
+  return v;
 }
 
 function speak(text) {
@@ -1881,12 +1893,14 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   const curGroqMaxTokens = curHasImage ? 2048 : 8192;
 
   busy = true;
+  setStreamingUI(true);
   updateSendDisabled();
   const statusLabel = ctx.provider === 'groq' && (ctx.reason === 'sensitive' || ctx.reason === 'private')
     ? 'private route' : 'thinking';
   setStatus(statusLabel, 'busy');
 
   const failThis = (msg) => {
+    setStreamingUI(false);
     writeEvEntry(ctx.entryRef, {
       role: 'ev', text: msg, sensitive: !!ctx.sensitive, failed: true, failedAt: Date.now(), errorMsg: msg,
       provider: usedLabel, retryUserText: ctx.userText, retryProvider: ctx.provider, retryReason: ctx.reason
@@ -1922,9 +1936,15 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   function flushDisplay() {
     _displayPending = false;
     const display = _thinkingOpen ? reply.slice(0, _thinkingEnd).trim() : reply.trim();
-    bodyEl.textContent = display || reply;
-    if (handsFreeActive) updateVoiceTranscript(display || reply);
-    el.chat.scrollTop = el.chat.scrollHeight;
+    const shown = display || reply;
+    /* Only touch textContent when it actually changed — avoids re-allocation + re-layout on
+       every rAF flush when the reply hasn't grown (e.g. model is idle but stream is alive). */
+    if (bodyEl.textContent !== shown) {
+      bodyEl.textContent = shown;
+      if (handsFreeActive) updateVoiceTranscript(shown);
+    }
+    /* rAF-coalesced scroll instead of a synchronous scrollHeight reflow on every token frame */
+    throttledScroll();
   }
   const token = (chunk) => {
     if (typeof chunk !== 'string') return;
@@ -2096,6 +2116,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           try {
             await fallbackToOpenRouter(err);
             busy = false;
+            setStreamingUI(false);
             updateSendDisabled();
             setStatus('online', '');
             reply = stripThinkingLeaks(reply);
@@ -2123,6 +2144,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               succeededProvider = 'gemini';
               writeEvEntry(ctx.entryRef, { role: 'ev', text: stripThinkingLeaks(cleaned), sensitive: !!ctx.sensitive, provider: usedLabel });
               busy = false;
+              setStreamingUI(false);
               updateSendDisabled();
               setStatus('online', '');
               flushDisplay();
@@ -2143,6 +2165,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           try {
             await fallbackToOpenRouter(err);
             busy = false;
+            setStreamingUI(false);
             updateSendDisabled();
             setStatus('online', '');
             reply = stripThinkingLeaks(reply);
@@ -2172,6 +2195,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               succeededProvider = 'gemini';
               writeEvEntry(ctx.entryRef, { role: 'ev', text: stripThinkingLeaks(cleaned), sensitive: !!ctx.sensitive, provider: usedLabel });
               busy = false;
+              setStreamingUI(false);
               updateSendDisabled();
               setStatus('online', '');
               flushDisplay();
@@ -2195,6 +2219,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   }
 
   busy = false;
+  setStreamingUI(false);
   updateSendDisabled();
   setStatus('online', '');
   reply = stripThinkingLeaks(reply);
@@ -2208,7 +2233,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   freshConversation = false;
   if (succeededProvider) maybeSummarizeHistory(succeededProvider).catch(() => {});
   if (ctx.clearAttachmentsOnSuccess) setPendingAttachments([]);
-  if (settings.voice) speak(cleaned);
+  /* Defer TTS off the reply hot path (voice setup can block the main thread on mobile) so the
+     reply text renders and the status clears first */
+  if (settings.voice) setTimeout(() => speak(cleaned), 0);
 }
 
 async function send(rawText) {
@@ -2666,7 +2693,13 @@ function init() {
       });
     }
   } catch (e) { /* ignore */ }
-  if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
+  if ('speechSynthesis' in window) {
+    /* Warm voice enumeration once at load and re-resolve the cached voice if the set arrives late */
+    window.speechSynthesis.getVoices();
+    const reCache = () => { _cachedVoice = null; };
+    if (window.speechSynthesis.onvoiceschanged !== undefined) window.speechSynthesis.onvoiceschanged = reCache;
+    else if (document.voicechanged !== undefined) document.voicechanged = reCache;
+  }
 
   el.reactor.addEventListener('click', toggleListening);
   el['voice-overlay'].addEventListener('click', () => {
