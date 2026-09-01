@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v89';
+const APP_VERSION = 'v90';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -895,8 +895,8 @@ const REPLY_DEADLINE_MS = 20000;
 /* Per-attempt budget to receive the *first token*. If a provider model hasn't produced a single
    token within this window (but the overall REPLY_DEADLINE_MS is still open), readSSE throws a
    "soft" timeout so the caller can fall through to the next model instead of dead-ending the
-   whole turn on one slow/silent model. */
-const FIRST_TOKEN_MS = 8000;
+   whole turn on one slow/silent model. This is a duration measured from when the read starts. */
+const FIRST_TOKEN_MS = 10000;
 /* Error thrown when the reply budget expires partway through a provider attempt/cascade. */
 const timeoutError = (ms) => {
   const e = new Error('Reply budget exceeded after ' + (ms / 1000) + 's');
@@ -923,6 +923,7 @@ const softTimeoutError = () => {
 async function readSSE(response, onData, onError, signal, deadlineMs, firstTokenMs) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const attemptStart = Date.now();
   let buffer = '';
   let ended = false;
   let gotData = false;
@@ -948,11 +949,11 @@ async function readSSE(response, onData, onError, signal, deadlineMs, firstToken
     /* If the overall deadline already passed, give up on this attempt for good (hard timeout).
        Otherwise, if no first token has arrived within its window, fall through to the next model. */
     if (deadlineMs && Date.now() >= deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
-    if (!gotData && firstTokenMs && Date.now() >= firstTokenMs) throw softTimeoutError();
+    if (!gotData && firstTokenMs && Date.now() - attemptStart >= firstTokenMs) throw softTimeoutError();
     /* watchdog fires at the fastest of: stall limit, overall deadline, or (pre-first-token) first-token window */
     let timeout = STALL_MS;
     if (deadlineMs) timeout = Math.max(0, Math.min(timeout, deadlineMs - Date.now()));
-    if (!gotData && firstTokenMs) timeout = Math.min(timeout, Math.max(0, firstTokenMs - Date.now()));
+    if (!gotData && firstTokenMs) timeout = Math.min(timeout, Math.max(0, firstTokenMs - (Date.now() - attemptStart)));
     let timer = null;
     if (signal) timer = setTimeout(() => signal.abort(), Math.max(1, timeout));
     let chunk;
@@ -962,7 +963,7 @@ async function readSSE(response, onData, onError, signal, deadlineMs, firstToken
       if (signal && signal.aborted) {
         /* distinguish a deadline/first-token abort from a plain stall so the caller fails fast+clear */
         if (deadlineMs && Date.now() >= deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
-        if (!gotData && firstTokenMs) throw softTimeoutError();
+        if (!gotData && firstTokenMs && Date.now() - attemptStart >= firstTokenMs) throw softTimeoutError();
         throw stallError();
       }
       throw e;
