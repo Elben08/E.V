@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v87';
+const APP_VERSION = 'v88';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -375,11 +375,11 @@ function fitOpenAITextBudget(provider, userText, attachments, budget, ratio) {
   return { messages: messages, fits: false, trimmed: false, estimated: estimateMessagesTokens(messages, ratio) };
 }
 
-async function openAISendFitted(provider, userText, attachments, token, maxTokens) {
+async function openAISendFitted(provider, userText, attachments, token, maxTokens, deadlineMs) {
   const start = attachments.length ? firstVisionIndex(provider) : undefined;
   const send = (msgs) => provider === 'groq'
-    ? sendToGroq(msgs, token, start, maxTokens)
-    : sendToOpenRouter(msgs, token, start, maxTokens);
+    ? sendToGroq(msgs, token, start, maxTokens, deadlineMs)
+    : sendToOpenRouter(msgs, token, start, maxTokens, deadlineMs);
   const fit = fitOpenAITextBudget(provider, userText, attachments);
   if (!fit.fits) throw new Error(TOO_LARGE_MSG);
   let lastErr = null;
@@ -761,6 +761,16 @@ function needsLiveInfo(text) {
   return LIVE_INFO_RE.test(text);
 }
 
+/* Narrower subset of LIVE_INFO_RE: only terms that genuinely require a live web search.
+   Broader knowledge questions (who, what is X, define, capital of, etc.) are routed to
+   Gemini via needsLiveInfo but don't need the googleSearch tool — skipping it avoids the
+   Gemini tool-use overhead (~2-3s) on plain-knowledge turns that happen to contain "today". */
+const LIVE_WEB_RE = /\b(weather|forecast|temperature|tonight|today'?s (?:weather|forecast|temperature|high|low|rain|snow|wind)|stock[s]? (?:price|quote|now)|price of|bitcoin|crypto(?:currency)?|gold price|oil price|gas price|fuel price|exchange rate|forex|currency (?:rate|exchange)|interest rate|inflation|breaking news|latest news|headline[s]?|live (?:score|update|news)|score[s]? (?:now|right now|live)|election (?:result|results|2026|2028)|traffic (?:now|live|update)|right now|what(?:'s| is) (?:the )?(?:current|latest))\b/i;
+
+function needsLiveWeb(text) {
+  return LIVE_WEB_RE.test(text);
+}
+
 function analyzeSensitivity(text) {
   const hits = new Set();
   for (const p of PII_PATTERNS) {
@@ -878,12 +888,24 @@ function buildMessages(provider, userText, attachments, hist) {
 }
 
 const STALL_MS = 60000;
+/* Hard wall-clock budget for one user send: E.V will answer or show a failed bubble + Retry
+   within this, even when a provider is slow or the fallback cascade is mid-flight. Shared across
+   auto-retries so a rate-limit retry reuses the remaining budget instead of stacking. */
+const REPLY_DEADLINE_MS = 15000;
+/* Error thrown when the reply budget expires partway through a provider attempt/cascade. */
+const timeoutError = (ms) => {
+  const e = new Error('Reply budget exceeded after ' + (ms / 1000) + 's');
+  e.timeout = true;
+  return e;
+};
 
 /* SSE read loop shared by all three providers. Ends on stream close OR the terminal `[DONE]`
    event (some free-model endpoints keep the socket open after [DONE] — previously that hung E.V
    in "thinking" forever). A 60s inactivity watchdog aborts the fetch (signal) so a stalled or
-   keep-alive-only stream fails fast into the normal error path instead of hanging. */
-async function readSSE(response, onData, onError, signal) {
+   keep-alive-only stream fails fast into the normal error path instead of hanging. When a deadline
+   is given, the watchdog shrinks to whichever fires sooner so a hung stream can't consume the
+   whole reply budget. */
+async function readSSE(response, onData, onError, signal, deadlineMs) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -906,13 +928,21 @@ async function readSSE(response, onData, onError, signal) {
   const stallError = () => new Error('Network stalled \u2014 no data for ' + (STALL_MS / 1000) + 's');
   for (;;) {
     if (ended) break;
+    /* watchdog fires at the stall limit, or sooner if the reply deadline is closer */
+    let timeout = STALL_MS;
+    if (deadlineMs) timeout = Math.max(0, Math.min(timeout, deadlineMs - Date.now()));
+    if (deadlineMs && timeout <= 0) throw timeoutError(REPLY_DEADLINE_MS);
     let timer = null;
-    if (signal) timer = setTimeout(() => signal.abort(), STALL_MS);
+    if (signal) timer = setTimeout(() => signal.abort(), timeout);
     let chunk;
     try {
       chunk = await reader.read();
     } catch (e) {
-      if (signal && signal.aborted) throw stallError();
+      if (signal && signal.aborted) {
+        /* distinguish deadline abort from a plain stall so the caller fails fast+clear */
+        if (deadlineMs && Date.now() > deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
+        throw stallError();
+      }
       throw e;
     } finally {
       if (timer) clearTimeout(timer);
@@ -933,18 +963,21 @@ async function readSSE(response, onData, onError, signal) {
   }
 }
 
-async function sendToGemini(messages, onToken, liveInfo) {
+async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) {
   /* enforce minimum gap between Gemini requests to avoid hammering the API */
   const cooldownLeft = geminiCooldownUntil - Date.now();
+  if (deadlineMs && Date.now() + cooldownLeft > deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
   if (cooldownLeft > 0) await sleep(cooldownLeft);
   const key = encodeURIComponent(settings.geminiKey);
   const headers = { 'Content-Type': 'application/json' };
+  const lastPart = messages.length && messages[messages.length - 1].parts ? messages[messages.length - 1].parts[0] : null;
+  const userText = lastPart && lastPart.text ? lastPart.text : '';
   const body = {
     contents: messages,
     systemInstruction: { parts: [{ text: buildSystem('gemini') }] },
     generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
   };
-  if (liveInfo) {
+  if (liveInfo && needsLiveWeb(userText)) {
     body.tools = [{ google_search: {} }];
     body.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
   }
@@ -1011,10 +1044,11 @@ async function sendToGemini(messages, onToken, liveInfo) {
         }
       }, (err) => {
         throw new Error((err && err.message) || 'Gemini stream error');
-      }, ctrl.signal);
+      }, ctrl.signal, deadlineMs);
       if (!streamed) throw emptyReplyError(finishReason, blockReason);
     } else {
-      const json = await Promise.race([res.json(), new Promise((_, rej) => setTimeout(() => rej(new Error('Gemini respond timed out')), STALL_MS))]);
+      const remain = deadlineMs ? Math.max(1, deadlineMs - Date.now()) : STALL_MS;
+      const json = await Promise.race([res.json(), new Promise((_, rej) => setTimeout(() => rej(deadlineMs ? timeoutError(REPLY_DEADLINE_MS) : new Error('Gemini respond timed out')), remain))]);
       const cand = json.candidates && json.candidates[0];
       const parts = cand && cand.content ? cand.content.parts : [];
       const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
@@ -1029,8 +1063,12 @@ async function sendToGemini(messages, onToken, liveInfo) {
   let rateLimitHits = 0;
   let dailyHits = 0;
   /* Wrap around the list starting at the active model so every Gemini model gets a shot —
-     the active/pinned model must not prevent the others (incl. ones before it) from being tried. */
-  for (let n = 0; n < GEMINI_MODELS.length; n++) {
+     the active/pinned model must not prevent the others (incl. ones before it) from being tried.
+     For a non-live, non-critical (light) turn, only try 2 models (pinned + one fallback) so a
+     slow/throttled model doesn't drag out the wait before falling through to Groq/OpenRouter. */
+  const maxTries = lightLoop ? 2 : GEMINI_MODELS.length;
+  for (let n = 0; n < maxTries; n++) {
+    if (deadlineMs && Date.now() > deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
     const model = GEMINI_MODELS[(start + n) % GEMINI_MODELS.length].id;
     try {
       await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
@@ -1098,14 +1136,15 @@ async function sendToGemini(messages, onToken, liveInfo) {
   throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
-async function sendToGroq(messages, onToken, startIndex, maxTokens) {
+async function sendToGroq(messages, onToken, startIndex, maxTokens, deadlineMs) {
   const start = typeof startIndex === 'number' && startIndex >= 0 && startIndex < GROQ_MODELS.length
     ? startIndex
     : clampModelIndex(GROQ_MODELS, activeModels.groq);
   let lastErr = null;
   for (let i = start; i < GROQ_MODELS.length; i++) {
+    if (deadlineMs && Date.now() > deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
     try {
-      await groqAttempt(GROQ_MODELS[i].id, messages, onToken, maxTokens);
+      await groqAttempt(GROQ_MODELS[i].id, messages, onToken, maxTokens, deadlineMs);
     } catch (e) {
       if (e.rateLimited) { lastErr = e; continue; }
       if (e.tooLarge) throw e;
@@ -1123,7 +1162,7 @@ async function sendToGroq(messages, onToken, startIndex, maxTokens) {
   throw new Error('All Groq models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
-async function groqAttempt(model, messages, onToken, maxTokens) {
+async function groqAttempt(model, messages, onToken, maxTokens, deadlineMs) {
   const ctrl = new AbortController();
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -1178,22 +1217,23 @@ async function groqAttempt(model, messages, onToken, maxTokens) {
       if (typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
       throw new Error((err && err.message) || 'Groq stream error');
-    }, ctrl.signal);
+    }, ctrl.signal, deadlineMs);
   } catch (e) {
     if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
     throw e;
   }
 }
 
-async function sendToOpenRouter(messages, onToken, startIndex, maxTokens) {
+async function sendToOpenRouter(messages, onToken, startIndex, maxTokens, deadlineMs) {
   lastOpenRouterModel = '';
   const start = typeof startIndex === 'number' && startIndex >= 0 && startIndex < OPENROUTER_MODELS.length
     ? startIndex
     : clampModelIndex(OPENROUTER_MODELS, activeModels.openrouter);
   let lastErr = null;
   for (let i = start; i < OPENROUTER_MODELS.length; i++) {
+    if (deadlineMs && Date.now() > deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
     try {
-      await openRouterAttempt(OPENROUTER_MODELS[i].id, messages, onToken, maxTokens);
+      await openRouterAttempt(OPENROUTER_MODELS[i].id, messages, onToken, maxTokens, deadlineMs);
     } catch (e) {
       if (e.rateLimited) { lastErr = e; continue; }
       if (e.tooLarge) throw e;
@@ -1212,7 +1252,7 @@ async function sendToOpenRouter(messages, onToken, startIndex, maxTokens) {
   throw new Error('All OpenRouter models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
-async function openRouterAttempt(model, messages, onToken, maxTokens) {
+async function openRouterAttempt(model, messages, onToken, maxTokens, deadlineMs) {
   const ctrl = new AbortController();
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -1277,7 +1317,7 @@ async function openRouterAttempt(model, messages, onToken, maxTokens) {
       if (typeof d.content === 'string' && d.content) { received = true; onToken(d.content); }
     }, (err) => {
       throw new Error((err && err.message) || 'OpenRouter stream error');
-    }, ctrl.signal);
+    }, ctrl.signal, deadlineMs);
     /* Some :free models (e.g. nemotron) stream a clean 200 with zero text — treat that as a
        failed attempt so sendToOpenRouter can move to the next model instead of replying nothing. */
     if (!received) {
@@ -1874,9 +1914,12 @@ function stripThinkingLeaks(text) {
   return text.replace(/^[\s]*(?:here'?s\s+(?:a\s+)?(?:my\s+)?(?:step[- ]by[- ]step\s+)?thinking\s+process:?\s*\n)([\s\S]*)/i, '$1').trim();
 }
 
-async function performReply(bubble, ctx, autoRetryLeft) {
+async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
   const retriesLeft = typeof autoRetryLeft === 'number' ? autoRetryLeft : MAX_AUTO_RETRY;
   const attachments = ctx.attachments || [];
+  /* Hard 15s budget per user send, computed once on the first invocation so auto-retries share it */
+  if (typeof deadlineMs !== 'number') deadlineMs = Date.now() + REPLY_DEADLINE_MS;
+  const deadline = deadlineMs;
   const bodyEl = bubble.querySelector('.body');
   let usedLabel = baseLabelFor(ctx);
 
@@ -1891,6 +1934,10 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   const curHasImage = attachments.some((a) => a.kind === 'image');
   const curHasPdf = attachments.some((a) => a.kind === 'pdf');
   const curGroqMaxTokens = curHasImage ? 2048 : 8192;
+  /* A "light" turn = non-live, plain-text (no image/PDF). These get a trimmed 2-model Gemini loop
+     so a slow pinned model falls through to Groq/OpenRouter faster instead of iterating all 4. */
+  const isLiveTurn = needsLiveInfo(ctx.userText);
+  const isLightTurn = !isLiveTurn && !curHasPdf && !curHasImage;
 
   busy = true;
   setStreamingUI(true);
@@ -1909,6 +1956,30 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     failInBubble(bubble, msg, () => performReply(bubble, ctx));
   };
 
+  /* Reply budget expired. If we already streamed a partial reply, deliver it as the answer
+     (the user got real content); otherwise fail with a clear message and a Retry button. */
+  const timeoutThis = () => {
+    const partial = (reply || '').trim();
+    if (partial) {
+      busy = false;
+      setStreamingUI(false);
+      updateSendDisabled();
+      setStatus('online', '');
+      reply = stripThinkingLeaks(reply);
+      flushDisplay();
+      writeEvEntry(ctx.entryRef, { role: 'ev', text: reply.trim(), sensitive: !!ctx.sensitive, provider: usedLabel });
+      extractFacts(ctx.userText);
+      freshConversation = false;
+      const note = document.createElement('div');
+      note.className = 'fallback-note';
+      note.textContent = 'Hit E.V\u2019s 15s reply budget \u2014 showing a partial answer. Tap Retry for the full one.';
+      bubble.appendChild(note);
+      toast('Hit the 15s reply budget \u2014 showing a partial answer.');
+      return;
+    }
+    failThis('E.V couldn\u2019t finish a reply within its 15s budget \u2014 the server may be slow. Try again.');
+  };
+
   const autoRetryRateLimit = async (err) => {
     const delayMs = rateLimitDelayMs(err);
     if (retriesLeft <= 0) { failThis(err.message || 'Rate-limited. Try again in a moment.' + rateHint(err && err.detail)); return; }
@@ -1925,7 +1996,8 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     setStatus('rate-limited \u2014 retrying\u2026', 'busy');
     toast(msg);
     await sleep(delayMs);
-    await performReply(bubble, ctx, retriesLeft - 1);
+    if (Date.now() > deadline) { failThis('E.V hit a rate limit and its 15s budget ran out while waiting to retry. Try again.'); return; }
+    await performReply(bubble, ctx, retriesLeft - 1, deadline);
   };
 
   let reply = '';
@@ -1977,7 +2049,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     if (curHasPdf || curHasImage || ctx.sensitive || privateMode) throw prevErr;
     toast('Trying OpenRouter\u2026');
     try {
-      await openAISendFitted('openrouter', ctx.userText, [], token, curGroqMaxTokens);
+      await openAISendFitted('openrouter', ctx.userText, [], token, curGroqMaxTokens, deadline);
     } catch (orErr) {
       if (orErr.rateLimited) {
         if (prevErr.rateLimited) {
@@ -2013,7 +2085,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       const fits = await fitGroqBudget(attachments, ctx.userText);
       if (!fits) throw new Error(gFail + ' (and the image is too large for Groq\u2019s free limit even after compression).');
       try {
-        await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens);
+        await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens, deadline);
       } catch (err) {
         if (err.rateLimited) {
           const both = new Error(gFail + ' Groq is also rate-limited right now (' + (err.detail || 'quota reached') + ').' + rateHint(err.detail));
@@ -2025,7 +2097,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       }
     } else {
       try {
-        await openAISendFitted('groq', ctx.userText, attachments, token, curGroqMaxTokens);
+        await openAISendFitted('groq', ctx.userText, attachments, token, curGroqMaxTokens, deadline);
       } catch (err) {
         if (err.rateLimited) {
           /* Groq hot too: try OpenRouter before giving up */
@@ -2060,11 +2132,12 @@ async function performReply(bubble, ctx, autoRetryLeft) {
 
   if (ctx.provider === 'gemini') {
     try {
-      await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, true);
+      await sendToGemini(buildMessages('gemini', ctx.userText, attachments), token, true, deadline, isLightTurn);
       succeededProvider = 'gemini';
       clearProviderOut('gemini');
       geminiCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS;
     } catch (err) {
+      if (err.timeout) { timeoutThis(); return; }
       if (curHasPdf) {
         failThis('Gemini couldn\u2019t process this PDF \u2014 all models unavailable or rate-limited. Try again later or use a shorter message.');
         return;
@@ -2082,6 +2155,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
       } catch (err2) {
         /* Gemini + Groq both rate-limited: auto-retry would just re-fire the same Gemini model iteration (~9 calls)
            and hit the same 429 again. Fail immediately with a clear message instead of wasting ~27 API calls. */
+        if (err2.timeout) { timeoutThis(); return; }
         if (err2.bothRateLimited) {
           failThis(err2.message + rateHint(err2.detail));
           return;
@@ -2092,8 +2166,9 @@ async function performReply(bubble, ctx, autoRetryLeft) {
     }
   } else if (ctx.provider === 'openrouter') {
     try {
-      await openAISendFitted('openrouter', ctx.userText, attachments, token, curGroqMaxTokens);
+      await openAISendFitted('openrouter', ctx.userText, attachments, token, curGroqMaxTokens, deadline);
     } catch (err) {
+      if (err.timeout) { timeoutThis(); return; }
       if (err.rateLimited) { await autoRetryRateLimit(err); return; }
       failThis(err.tooLarge || isTooLargeError(err.message) || err.message === TOO_LARGE_MSG
         ? 'OpenRouter can\u2019t fit this request right now \u2014 try a shorter message, or clear Memory / start a new conversation.'
@@ -2105,11 +2180,12 @@ async function performReply(bubble, ctx, autoRetryLeft) {
   } else {
     try {
       if (curHasImage) {
-        await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens);
+        await sendToGroq(buildMessages('groq', ctx.userText, attachments), token, groqStart(), curGroqMaxTokens, deadline);
       } else {
-        await openAISendFitted('groq', ctx.userText, attachments, token, curGroqMaxTokens);
+        await openAISendFitted('groq', ctx.userText, attachments, token, curGroqMaxTokens, deadline);
       }
     } catch (err) {
+      if (err.timeout) { timeoutThis(); return; }
       if (err.rateLimited) {
         /* Groq hot: fall back to OpenRouter for text-only, non-sensitive turns */
         if (settings.openrouterKey && !ctx.sensitive && !privateMode && !curHasImage && !curHasPdf) {
@@ -2136,7 +2212,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), true, deadline, false);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
@@ -2153,6 +2229,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               return;
             }
           } catch (gemErr) {
+            if (gemErr.timeout) { timeoutThis(); return; }
             toast('Gemini fallback also failed: ' + (gemErr.message || gemErr));
           }
         }
@@ -2186,7 +2263,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
           try {
             toast('Trying Gemini as fallback\u2026');
             const geminiParts = [];
-            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), false);
+            await sendToGemini(buildMessages('gemini', ctx.userText, attachments), (t) => geminiParts.push(t), false, deadline, false);
             const cleaned = geminiParts.join('').trim();
             if (cleaned) {
               token(cleaned);
@@ -2204,6 +2281,7 @@ async function performReply(bubble, ctx, autoRetryLeft) {
               return;
             }
           } catch (gemErr) {
+            if (gemErr.timeout) { timeoutThis(); return; }
             toast('Gemini fallback also failed: ' + (gemErr.message || gemErr));
           }
         }
