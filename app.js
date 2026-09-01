@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v90';
+const APP_VERSION = 'v91';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -310,6 +310,16 @@ function retrySecondsFrom(detail) {
 function rateLimitDelayMs(err) {
   const d = (err && err.retryDelayMs) || 0;
   return Math.min(Math.max(d, RATE_RETRY_DEFAULT_MS), RATE_RETRY_MAX_MS);
+}
+
+/* Compact terminal reason for a provider error, used when wrapping a failed fallback so the
+   message doesn't re-embed the full (already-printed) upstream error text over and over. */
+function shortErrReason(err) {
+  if (!err) return 'unknown error';
+  if (err.timeout) return 'timed out after ' + Math.round(REPLY_DEADLINE_MS / 1000) + 's';
+  if (err.rateLimited) return 'is rate-limited';
+  if (err.tooLarge || isTooLargeError(err.message)) return 'can\u2019t fit the request';
+  return err.message;
 }
 
 /* Centralized Gemini 429 labeling: capacity vs daily quota vs per-minute rate limit. The daily case
@@ -1112,7 +1122,11 @@ async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) 
       }
       lastErr = e;
       /* When liveInfo is true, keep tools (googleSearch) — don't strip them in recovery,
-         otherwise the model loses web search and falls back to "I have no internet" answers. */
+         otherwise the model loses web search and falls back to "I have no internet" answers.
+         Exception: a MALFORMED_FUNCTION_CALL means the tool call itself is broken (a known
+         transient free-tier issue), so retry THAT model WITHOUT the tool to get a plain-text
+         answer instead of repeating the broken call. */
+      const malformed = /MALFORMED_FUNCTION_CALL/.test((e && e.message) || '');
       if (!isModelUnavailable(e.message)) {
         let recovered = false;
         let dailyHit = false;
@@ -1120,7 +1134,7 @@ async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) 
         let rateHit = false;
         for (let r = 0; r < 3 && !recovered; r++) {
           try {
-            await attempt(model, 'generateContent', liveInfo);
+            await attempt(model, 'generateContent', malformed ? false : liveInfo);
             recovered = true;
           } catch (e2) {
             if (e2.rateLimited) {
@@ -1141,6 +1155,8 @@ async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) 
         if (rateHit) { rateLimitHits++; continue; }
         if (recovered) { setActiveModel('gemini', (start + n) % GEMINI_MODELS.length); return; }
         if (isModelUnavailable(lastErr.message)) continue;
+        /* A malformed tool call shouldn't kill the whole route — try the next Gemini model */
+        if (malformed || /MALFORMED_FUNCTION_CALL/.test((lastErr.message) || '')) continue;
         throw lastErr;
       } else {
         continue;
@@ -2111,7 +2127,7 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
       if (orErr.tooLarge || isTooLargeError(orErr.message) || orErr.message === TOO_LARGE_MSG) {
         throw new Error(prevErr.message + ' OpenRouter also can\u2019t fit this request \u2014 try a shorter message, or clear Memory / start a new conversation.');
       }
-      throw new Error(prevErr.message + ' \u2014 OpenRouter also failed: ' + orErr.message);
+      throw new Error('OpenRouter \u2014 ' + shortErrReason(orErr));
     }
     markFallbackNote('openrouter · fallback · ' + openRouterModelLabel(), prevErr.message);
     succeededProvider = 'openrouter';
@@ -2165,7 +2181,7 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
               return;
             } catch (orErr) {
               if (orErr.bothRateLimited) throw orErr;
-              throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit), and OpenRouter also failed: ' + orErr.message);
+              throw new Error(gFail + ' Groq\u2019s free tier also can\u2019t fit this request (8K tokens/min limit), and OpenRouter also failed: ' + shortErrReason(orErr));
             }
           }
           throw new Error(gFail + ' Groq\u2019s free tier can\u2019t fit this request (8K tokens/min limit). Try a shorter message, or clear Memory / start a new conversation.');
