@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v91';
+const APP_VERSION = 'v92';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -634,6 +634,10 @@ let lastOpenRouterModel = '';
 
 const OUTAGE_MS = 300000;
 const CAPACITY_OUTAGE_MS = 60000;
+/* How long to deprioritize Gemini after a full-turn zero-output hard timeout (a slow/silent
+   Gemini that never delivers a first token burns the whole REPLY_DEADLINE_MS every message).
+   Short window so a merely-throttled Gemini auto-recovers; any later Gemini success clears it. */
+const GEMINI_SLOW_OUTAGE_MS = 60000;
 /* Provider outages persist to localStorage ({ name: { start, ms, until } }) so a reopen or
    SW-update reload no longer forgets a same-day-exhausted provider (e.g. Gemini daily quota). */
 let providerOut = loadJSON(STORAGE.providerOut, {});
@@ -2201,17 +2205,42 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
       clearProviderOut('gemini');
       geminiCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS;
     } catch (err) {
-      if (err.timeout) { timeoutThis(); return; }
       if (curHasPdf) {
         failThis('Gemini couldn\u2019t process this PDF \u2014 all models unavailable or rate-limited. Try again later or use a shorter message.');
         return;
       }
       /* live-info queries (weather, news, stocks, etc.) need Gemini\u2019s googleSearch — Groq/OpenRouter can\u2019t do web search, so falling back gives a useless \u201cI have no internet\u201d reply. Show a clear error instead. */
       if (needsLiveInfo(ctx.userText)) {
+        if (err.timeout) {
+          failThis('Gemini timed out getting live data \u2014 it needs Gemini\u2019s web search. Try again in a moment.');
+          return;
+        }
         const hint = err.rateLimited
           ? geminiFailureLabel(err)
           : 'Gemini is temporarily unavailable (' + err.message + ').';
         failThis('Live data requires Gemini \u2014 ' + hint + ' Try again in a moment.');
+        return;
+      }
+      /* Slow/silent Gemini (zero tokens within the reply budget) no longer dead-ends a turn:
+         hand non-live turns off to Groq/OpenRouter, which usually reply in ~2s. The 20s budget is
+         shared via `deadline`, so if Gemini ate it all fallbackToGroq\u2019s send throws timeoutError
+         and timeoutThis() below still caps total wait. A full-turn zero-output *hard* timeout also
+         deprioritizes Gemini for a short window so later messages route around it. */
+      if (err.timeout && !(reply || '').trim()) {
+        const hard = !err.soft;
+        try {
+          await fallbackToGroq(err);
+          if (hard) markProviderOut('gemini', GEMINI_SLOW_OUTAGE_MS);
+        } catch (err2) {
+          if (hard) markProviderOut('gemini', GEMINI_SLOW_OUTAGE_MS);
+          if (err2.timeout) { timeoutThis(); return; }
+          if (err2.bothRateLimited) {
+            failThis(err2.message + rateHint(err2.detail));
+            return;
+          }
+          failThis(err2.message);
+          return;
+        }
         return;
       }
       try {
