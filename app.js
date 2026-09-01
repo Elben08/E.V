@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v88';
+const APP_VERSION = 'v89';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -891,25 +891,41 @@ const STALL_MS = 60000;
 /* Hard wall-clock budget for one user send: E.V will answer or show a failed bubble + Retry
    within this, even when a provider is slow or the fallback cascade is mid-flight. Shared across
    auto-retries so a rate-limit retry reuses the remaining budget instead of stacking. */
-const REPLY_DEADLINE_MS = 15000;
+const REPLY_DEADLINE_MS = 20000;
+/* Per-attempt budget to receive the *first token*. If a provider model hasn't produced a single
+   token within this window (but the overall REPLY_DEADLINE_MS is still open), readSSE throws a
+   "soft" timeout so the caller can fall through to the next model instead of dead-ending the
+   whole turn on one slow/silent model. */
+const FIRST_TOKEN_MS = 8000;
 /* Error thrown when the reply budget expires partway through a provider attempt/cascade. */
 const timeoutError = (ms) => {
   const e = new Error('Reply budget exceeded after ' + (ms / 1000) + 's');
   e.timeout = true;
   return e;
 };
+/* Error thrown when one attempt fails to produce a first token within FIRST_TOKEN_MS but the
+   overall turn budget is still open — signals "try the next model, don't give up yet". */
+const softTimeoutError = () => {
+  const e = new Error('No first token within ' + (FIRST_TOKEN_MS / 1000) + 's');
+  e.timeout = true;
+  e.soft = true;
+  return e;
+};
 
 /* SSE read loop shared by all three providers. Ends on stream close OR the terminal `[DONE]`
    event (some free-model endpoints keep the socket open after [DONE] — previously that hung E.V
-   in "thinking" forever). A 60s inactivity watchdog aborts the fetch (signal) so a stalled or
-   keep-alive-only stream fails fast into the normal error path instead of hanging. When a deadline
-   is given, the watchdog shrinks to whichever fires sooner so a hung stream can't consume the
-   whole reply budget. */
-async function readSSE(response, onData, onError, signal, deadlineMs) {
+   in "thinking" forever). A watchdog aborts the fetch (signal) so a stalled or keep-alive-only
+   stream fails fast into the normal error path instead of hanging. When a deadline is given, the
+   watchdog shrinks to whichever fires sooner so a hung stream can't consume the whole reply
+   budget. When `firstTokenMs` is given and no token has arrived yet, the watchdog also shrinks to
+   that — if it fires with the overall deadline still open, a "soft" timeout is thrown so the
+   caller can fall through to the next model instead of dead-ending on one slow/silent attempt. */
+async function readSSE(response, onData, onError, signal, deadlineMs, firstTokenMs) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let ended = false;
+  let gotData = false;
   const handleLine = (rawLine) => {
     const line = rawLine.trim();
     if (line.indexOf('data:') !== 0) return;
@@ -923,24 +939,30 @@ async function readSSE(response, onData, onError, signal, deadlineMs) {
         return;
       }
       onData(json);
+      gotData = true;
     } catch (e) { /* skip partial */ }
   };
   const stallError = () => new Error('Network stalled \u2014 no data for ' + (STALL_MS / 1000) + 's');
   for (;;) {
     if (ended) break;
-    /* watchdog fires at the stall limit, or sooner if the reply deadline is closer */
+    /* If the overall deadline already passed, give up on this attempt for good (hard timeout).
+       Otherwise, if no first token has arrived within its window, fall through to the next model. */
+    if (deadlineMs && Date.now() >= deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
+    if (!gotData && firstTokenMs && Date.now() >= firstTokenMs) throw softTimeoutError();
+    /* watchdog fires at the fastest of: stall limit, overall deadline, or (pre-first-token) first-token window */
     let timeout = STALL_MS;
     if (deadlineMs) timeout = Math.max(0, Math.min(timeout, deadlineMs - Date.now()));
-    if (deadlineMs && timeout <= 0) throw timeoutError(REPLY_DEADLINE_MS);
+    if (!gotData && firstTokenMs) timeout = Math.min(timeout, Math.max(0, firstTokenMs - Date.now()));
     let timer = null;
-    if (signal) timer = setTimeout(() => signal.abort(), timeout);
+    if (signal) timer = setTimeout(() => signal.abort(), Math.max(1, timeout));
     let chunk;
     try {
       chunk = await reader.read();
     } catch (e) {
       if (signal && signal.aborted) {
-        /* distinguish deadline abort from a plain stall so the caller fails fast+clear */
-        if (deadlineMs && Date.now() > deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
+        /* distinguish a deadline/first-token abort from a plain stall so the caller fails fast+clear */
+        if (deadlineMs && Date.now() >= deadlineMs) throw timeoutError(REPLY_DEADLINE_MS);
+        if (!gotData && firstTokenMs) throw softTimeoutError();
         throw stallError();
       }
       throw e;
@@ -1044,7 +1066,7 @@ async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) 
         }
       }, (err) => {
         throw new Error((err && err.message) || 'Gemini stream error');
-      }, ctrl.signal, deadlineMs);
+      }, ctrl.signal, deadlineMs, FIRST_TOKEN_MS);
       if (!streamed) throw emptyReplyError(finishReason, blockReason);
     } else {
       const remain = deadlineMs ? Math.max(1, deadlineMs - Date.now()) : STALL_MS;
@@ -1073,6 +1095,7 @@ async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) 
     try {
       await attempt(model, 'streamGenerateContent?alt=sse', liveInfo);
     } catch (e) {
+      if (e.soft) { lastErr = e; continue; }
       if (e.rateLimited) {
         /* daily per-model cap (20 req/day): the next model has its own daily quota, so try it.
            Only if EVERY model is daily-capped is the whole provider marked out until midnight Pacific. */
@@ -1133,6 +1156,9 @@ async function sendToGemini(messages, onToken, liveInfo, deadlineMs, lightLoop) 
     else markProviderOut('gemini', capacityHits >= GEMINI_MODELS.length ? CAPACITY_OUTAGE_MS : undefined);
     throw lastErr;
   }
+  if (lastErr && lastErr.soft) {
+    throw softTimeoutError();
+  }
   throw new Error('All Gemini models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
 
@@ -1146,6 +1172,7 @@ async function sendToGroq(messages, onToken, startIndex, maxTokens, deadlineMs) 
     try {
       await groqAttempt(GROQ_MODELS[i].id, messages, onToken, maxTokens, deadlineMs);
     } catch (e) {
+      if (e.soft) { lastErr = e; continue; }
       if (e.rateLimited) { lastErr = e; continue; }
       if (e.tooLarge) throw e;
       lastErr = e;
@@ -1158,6 +1185,11 @@ async function sendToGroq(messages, onToken, startIndex, maxTokens, deadlineMs) 
   if (lastErr && lastErr.rateLimited) {
     markProviderOut('groq');
     throw lastErr;
+  }
+  if (lastErr && lastErr.soft) {
+    /* every model was silent for the first-token window — treat as a soft (per-attempt-provider)
+       timeout so the caller's .timeout routing decides, not a cryptic "All models unavailable" */
+    throw softTimeoutError();
   }
   throw new Error('All Groq models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
@@ -1217,7 +1249,7 @@ async function groqAttempt(model, messages, onToken, maxTokens, deadlineMs) {
       if (typeof d.content === 'string' && d.content) onToken(d.content);
     }, (err) => {
       throw new Error((err && err.message) || 'Groq stream error');
-    }, ctrl.signal, deadlineMs);
+    }, ctrl.signal, deadlineMs, FIRST_TOKEN_MS);
   } catch (e) {
     if (/tokens per minute|tpm|rate ?limit/i.test(e.message)) throw rateLimitedError(e.message);
     throw e;
@@ -1235,6 +1267,7 @@ async function sendToOpenRouter(messages, onToken, startIndex, maxTokens, deadli
     try {
       await openRouterAttempt(OPENROUTER_MODELS[i].id, messages, onToken, maxTokens, deadlineMs);
     } catch (e) {
+      if (e.soft) { lastErr = e; continue; }
       if (e.rateLimited) { lastErr = e; continue; }
       if (e.tooLarge) throw e;
       if (e.emptyReply) { lastErr = e; continue; }
@@ -1248,6 +1281,9 @@ async function sendToOpenRouter(messages, onToken, startIndex, maxTokens, deadli
   if (lastErr && lastErr.rateLimited) {
     markProviderOut('openrouter');
     throw lastErr;
+  }
+  if (lastErr && lastErr.soft) {
+    throw softTimeoutError();
   }
   throw new Error('All OpenRouter models unavailable' + (lastErr ? ' (' + lastErr.message + ')' : ''));
 }
@@ -1317,7 +1353,7 @@ async function openRouterAttempt(model, messages, onToken, maxTokens, deadlineMs
       if (typeof d.content === 'string' && d.content) { received = true; onToken(d.content); }
     }, (err) => {
       throw new Error((err && err.message) || 'OpenRouter stream error');
-    }, ctrl.signal, deadlineMs);
+    }, ctrl.signal, deadlineMs, FIRST_TOKEN_MS);
     /* Some :free models (e.g. nemotron) stream a clean 200 with zero text — treat that as a
        failed attempt so sendToOpenRouter can move to the next model instead of replying nothing. */
     if (!received) {
@@ -1917,7 +1953,7 @@ function stripThinkingLeaks(text) {
 async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
   const retriesLeft = typeof autoRetryLeft === 'number' ? autoRetryLeft : MAX_AUTO_RETRY;
   const attachments = ctx.attachments || [];
-  /* Hard 15s budget per user send, computed once on the first invocation so auto-retries share it */
+  /* Hard reply budget per user send, computed once on the first invocation so auto-retries share it */
   if (typeof deadlineMs !== 'number') deadlineMs = Date.now() + REPLY_DEADLINE_MS;
   const deadline = deadlineMs;
   const bodyEl = bubble.querySelector('.body');
@@ -1960,6 +1996,16 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
      (the user got real content); otherwise fail with a clear message and a Retry button. */
   const timeoutThis = () => {
     const partial = (reply || '').trim();
+    /* Human-readable route context so the timeout isn't a bare "server may be slow" */
+    const reasonPhrase = ctx.reason === 'gemini-out' ? 'Gemini was already marked unavailable, so this went to '
+      + (ctx.provider === 'groq' ? 'Groq' : 'OpenRouter')
+      : ctx.reason === 'groq-out' ? 'Groq was already marked unavailable'
+      : ctx.reason === 'outage' ? 'both Gemini and Groq were unavailable'
+      : (ctx.reason === 'sensitive' || ctx.reason === 'private' || ctx.reason === 'policy') ? 'the private Groq route'
+      : ctx.reason === 'live-info' ? 'the live-data Gemini route'
+      : '';
+    const budgetLabel = Math.round(REPLY_DEADLINE_MS / 1000) + 's';
+    const providerLabel = ctx.provider === 'gemini' ? 'Gemini' : ctx.provider === 'openrouter' ? 'OpenRouter' : 'Groq';
     if (partial) {
       busy = false;
       setStreamingUI(false);
@@ -1972,12 +2018,13 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
       freshConversation = false;
       const note = document.createElement('div');
       note.className = 'fallback-note';
-      note.textContent = 'Hit E.V\u2019s 15s reply budget \u2014 showing a partial answer. Tap Retry for the full one.';
+      note.textContent = 'Hit E.V\u2019s ' + budgetLabel + ' reply budget \u2014 showing a partial answer. Tap Retry for the full one.';
       bubble.appendChild(note);
-      toast('Hit the 15s reply budget \u2014 showing a partial answer.');
+      toast('Hit the ' + budgetLabel + ' reply budget \u2014 showing a partial answer.');
       return;
     }
-    failThis('E.V couldn\u2019t finish a reply within its 15s budget \u2014 the server may be slow. Try again.');
+    const context = reasonPhrase ? (' (' + providerLabel + (reasonPhrase ? ' \u2014 ' + reasonPhrase : '') + ')') : ' (' + providerLabel + ')';
+    failThis('E.V couldn\u2019t finish a reply within its ' + budgetLabel + ' budget' + context + ' \u2014 the provider took too long to respond. Tap Retry to try again.');
   };
 
   const autoRetryRateLimit = async (err) => {
@@ -1996,7 +2043,7 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
     setStatus('rate-limited \u2014 retrying\u2026', 'busy');
     toast(msg);
     await sleep(delayMs);
-    if (Date.now() > deadline) { failThis('E.V hit a rate limit and its 15s budget ran out while waiting to retry. Try again.'); return; }
+    if (Date.now() > deadline) { failThis('E.V hit a rate limit and its ' + Math.round(REPLY_DEADLINE_MS / 1000) + 's budget ran out while waiting to retry. Try again.'); return; }
     await performReply(bubble, ctx, retriesLeft - 1, deadline);
   };
 
