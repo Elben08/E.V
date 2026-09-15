@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v92';
+const APP_VERSION = 'v93';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -170,6 +170,11 @@ const MAX_TOTAL_MB = 20;
 const IMG_MIME_RE = /^image\/(jpeg|png|webp|heic|heif)$/;
 
 let pendingAttachments = [];
+/* One-tap Google Lens: a captured photo is attached then sent with this fixed prompt.
+   lensPending marks the in-flight lens turn so send() can pin it to a vision-capable
+   provider (Gemini, else Groq) instead of letting OpenRouter free see the image. */
+const LENS_PROMPT = 'Identify what is in this photo. Describe the key objects, scene, and any landmarks or notable details.';
+let lensPending = false;
 
 function attachLimits() {
   const limits = { maxCount: MAX_ATTACHMENTS, maxTotalMB: MAX_TOTAL_MB };
@@ -621,6 +626,32 @@ function getAttachmentText() {
     : '';
 }
 
+/* One-tap Google Lens flow: take/select a photo via the camera input, attach it as the sole
+   attachment, then immediately send the fixed LENS_PROMPT. lensPending routes the turn to a
+   vision-capable provider (Gemini, else Groq) — never OpenRouter free (privacy invariant). */
+function handleLensCapture(file) {
+  if (busy) { toast('E.V is busy right now.'); return; }
+  if (!file) return;
+  const mime = file.type.toLowerCase();
+  if (!IMG_MIME_RE.test(mime)) { toast('Lens needs a photo'); return; }
+  const sizeMB = file.size / (1024 * 1024);
+  const err = attachmentError(file, 'image');
+  if (err) { toast(err); return; }
+  setPendingAttachments([]);
+  const a = { file: file, kind: 'image', name: 'lens.jpg', mime: mime, sizeMB: sizeMB, dataURL: null };
+  readFileAsDataURL(file).then((dataURL) => loadImage(dataURL)).then((img) => {
+    a.dataURL = imageToJPEG(img, 1024, 0.7);
+    a.mime = 'image/jpeg';
+    if (busy) { toast('E.V got busy while reading the photo \u2014 try again.'); return; }
+    setPendingAttachments([a]);
+    lensPending = true;
+    send(LENS_PROMPT);
+  }).catch(() => {
+    toast('Could not read the photo');
+    lensPending = false;
+  });
+}
+
 let busy = false;
 let activeModels = {
   gemini: loadJSON(STORAGE.geminiModel, 0),
@@ -758,6 +789,7 @@ function isModelUnavailable(message) {
 
 const el = {};
 const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'attach-tray', 'reactor', 'reactor-wrap', 'status-dot', 'status-text',
+  'btn-lens', 'lens-input',
   'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-openrouter', 'set-provider', 'set-privacy', 'set-voice', 'set-hands-free', 'set-macro-webhook',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'openrouter-model-label', 'btn-reset-gemini', 'btn-reset-groq', 'btn-reset-openrouter',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
@@ -2225,27 +2257,16 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
          hand non-live turns off to Groq/OpenRouter, which usually reply in ~2s. The 20s budget is
          shared via `deadline`, so if Gemini ate it all fallbackToGroq\u2019s send throws timeoutError
          and timeoutThis() below still caps total wait. A full-turn zero-output *hard* timeout also
-         deprioritizes Gemini for a short window so later messages route around it. */
-      if (err.timeout && !(reply || '').trim()) {
-        const hard = !err.soft;
-        try {
-          await fallbackToGroq(err);
-          if (hard) markProviderOut('gemini', GEMINI_SLOW_OUTAGE_MS);
-        } catch (err2) {
-          if (hard) markProviderOut('gemini', GEMINI_SLOW_OUTAGE_MS);
-          if (err2.timeout) { timeoutThis(); return; }
-          if (err2.bothRateLimited) {
-            failThis(err2.message + rateHint(err2.detail));
-            return;
-          }
-          failThis(err2.message);
-          return;
-        }
-        return;
-      }
+         deprioritizes Gemini for a short window so later messages route around it.
+         NOTE: on success this branch must NOT return early — it falls through to the shared
+         success tail (busy=false, status online, writeEvEntry) like the non-timeout fallback. */
+      const geminiTimedOut = !!(err.timeout && !(reply || '').trim());
+      const hardGeminiTimeout = geminiTimedOut && !err.soft;
       try {
         await fallbackToGroq(err);
+        if (hardGeminiTimeout) markProviderOut('gemini', GEMINI_SLOW_OUTAGE_MS);
       } catch (err2) {
+        if (hardGeminiTimeout) markProviderOut('gemini', GEMINI_SLOW_OUTAGE_MS);
         /* Gemini + Groq both rate-limited: auto-retry would just re-fire the same Gemini model iteration (~9 calls)
            and hit the same 429 again. Fail immediately with a clear message instead of wasting ~27 API calls. */
         if (err2.timeout) { timeoutThis(); return; }
@@ -2430,6 +2451,24 @@ async function send(rawText) {
   let { provider, reason } = chooseProvider(analysis, text);
 
   const hasPdf = pendingAttachments.some((a) => a.kind === 'pdf');
+  const hasImage = pendingAttachments.some((a) => a.kind === 'image');
+  /* One-tap Lens turns: pin to a vision-capable provider. OpenRouter free is never sent images
+     (privacy invariant), Groq's vision model is the fallback, and forced-privacy routing is
+     always honored — Gemini is preferred only when the user hasn't locked privacy to Groq. */
+  if (lensPending) {
+    lensPending = false;
+    if (hasImage) {
+      const forcedPriv = settings.privacy === 'groq' || privateMode;
+      if (!forcedPriv && settings.geminiKey && !isProviderOut('gemini')) { provider = 'gemini'; reason = 'lens'; }
+      else if (settings.groqKey) { provider = 'groq'; reason = 'lens'; }
+      else {
+        setPendingAttachments([]);
+        fail('Lens needs a Gemini (or Groq) API key in Settings.');
+        return;
+      }
+    }
+  }
+
   if (hasPdf && provider === 'groq') {
     if (settings.geminiKey) {
       provider = 'gemini'; reason = 'pdf-reroute';
@@ -2448,7 +2487,6 @@ async function send(rawText) {
       return;
     }
   }
-  const hasImage = pendingAttachments.some((a) => a.kind === 'image');
   if (provider === 'groq' && hasImage) {
     const fits = await fitGroqBudget(pendingAttachments, text + note);
     if (!fits) {
@@ -2892,6 +2930,16 @@ function init() {
   el['file-input'].addEventListener('change', () => {
     handleFileInput(el['file-input'].files);
     el['file-input'].value = '';
+  });
+  el['btn-lens'].addEventListener('click', () => {
+    if (busy) return;
+    el['lens-input'].value = '';
+    el['lens-input'].click();
+  });
+  el['lens-input'].addEventListener('change', () => {
+    const f = el['lens-input'].files && el['lens-input'].files[0];
+    el['lens-input'].value = '';
+    if (f) handleLensCapture(f);
   });
   window.addEventListener('beforeunload', () => { if (!busy) saveSession(); if (pendingAttachments.length) setPendingAttachments([]); });
   el['btn-settings'].addEventListener('click', openSettings);
