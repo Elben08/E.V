@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v93';
+const APP_VERSION = 'v94';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -801,7 +801,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'btn-back-chat', 'btn-back-voice', 'btn-exit-voice', 'reactor-screen'];
 els.forEach((id) => { el[id] = document.getElementById(id); });
 
-const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday|look up|look up for|find out|search for|how much|what(?:'s| is| are) the .*(?:price|rate|cost|exchange)|oil price|gas price|fuel price|exchange rate|forex|currency|interest rate|inflation|GDP|population|unemployment|forecast for|prediction|outlook)\b/i;
+const LIVE_INFO_RE = /\b(weather|forecast|news|headlines|score|scores|result|results|match|stock|stocks|price|prices|gold price|bitcoin|crypto|election|traffic|sports|latest|update|updates|today|tonight|now|current|right now|temperature|schedule|status of|breaking|live|game|opening|closing|holiday|look up|look up for|find out|search for|how much (?:is|are|does|do|did|would|will|cost|costs|it cost)|what(?:'s| is| are) the .*(?:price|rate|cost|exchange)|oil price|gas price|fuel price|exchange rate|forex|currency|interest rate|inflation|GDP|population|unemployment|forecast for|prediction|outlook)\b/i;
 
 function needsLiveInfo(text) {
   return LIVE_INFO_RE.test(text);
@@ -2241,8 +2241,12 @@ async function performReply(bubble, ctx, autoRetryLeft, deadlineMs) {
         failThis('Gemini couldn\u2019t process this PDF \u2014 all models unavailable or rate-limited. Try again later or use a shorter message.');
         return;
       }
-      /* live-info queries (weather, news, stocks, etc.) need Gemini\u2019s googleSearch — Groq/OpenRouter can\u2019t do web search, so falling back gives a useless \u201cI have no internet\u201d reply. Show a clear error instead. */
-      if (needsLiveInfo(ctx.userText)) {
+      /* Only genuinely-live-web turns (weather, news, stocks, "right now", etc.) truly need Gemini's
+         googleSearch — Groq/OpenRouter can't do web search, so the fallback gives a useless
+         "I have no internet" reply and we fail honestly instead. Broad LIVE_INFO_RE matches
+         (price, today, how much, population…) are just Gemini-preference for quality (v88);
+         those fall through to the Groq/OpenRouter fallback path below (v94). */
+      if (needsLiveWeb(ctx.userText)) {
         if (err.timeout) {
           failThis('Gemini timed out getting live data \u2014 it needs Gemini\u2019s web search. Try again in a moment.');
           return;
