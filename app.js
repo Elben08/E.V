@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v94';
+const APP_VERSION = 'v95';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -793,7 +793,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'modal-settings', 'app-version', 'set-gemini', 'set-groq', 'set-openrouter', 'set-provider', 'set-privacy', 'set-voice', 'set-hands-free', 'set-macro-webhook',
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'openrouter-model-label', 'btn-reset-gemini', 'btn-reset-groq', 'btn-reset-openrouter',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
-  'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new',
+  'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new', 'btn-share',
   'voice-overlay', 'vo-transcript', 'vo-status',
   'screen-dashboard', 'screen-chat', 'screen-voice',
   'dash-greeting-text', 'dash-history-list', 'btn-ask-now',
@@ -2736,6 +2736,76 @@ function stopVoiceScreenListening() {
 /* ---- Session management ---- */
 let activeSessionId = null;
 
+/* ---- Share transcript (v95) ---- */
+/* Flattens history entries into a readable transcript. Every entry is included verbatim —
+   the share is the user's explicit choice and E.V doesn't redact sensitive turns here. */
+function buildTranscript(sourceHistory) {
+  const lines = [];
+  lines.push('E.V \u2014 conversation \u00b7 ' + new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+  lines.push('');
+  for (const h of sourceHistory) {
+    if (h.role === 'user') {
+      lines.push('[You] ' + h.text);
+    } else if (h.failed) {
+      lines.push('[E.V (failed)] ' + (h.errorMsg || h.text || ''));
+    } else {
+      lines.push(h.provider ? ('[E.V (' + h.provider + ')] ' + h.text) : ('[E.V] ' + h.text));
+    }
+    lines.push('');
+  }
+  return lines.join('\n').trim();
+}
+
+function shareText(text) {
+  /* Native share sheet (Android/iOS) first; clipboard; then download as a .txt file. */
+  if (navigator.share) {
+    navigator.share({ title: 'E.V conversation', text: text }).catch((err) => {
+      if (err && err.name === 'AbortError') return; /* user dismissed the sheet */
+      fallbackShareText(text);
+    });
+    return;
+  }
+  fallbackShareText(text);
+}
+
+function fallbackShareText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      toast('Conversation copied to clipboard.');
+    }).catch(() => {
+      downloadTranscript(text);
+    });
+  } else {
+    downloadTranscript(text);
+  }
+}
+
+function downloadTranscript(text) {
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'E.V-conversation-' + new Date().toISOString().slice(0, 10) + '.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  toast('Conversation downloaded.');
+}
+
+function shareCurrentConversation() {
+  if (!history.length) { toast('Nothing to share yet.'); return; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  shareText(buildTranscript(history));
+}
+
+function shareSession(id) {
+  const sessions = loadJSON(STORAGE.sessions, []);
+  const session = sessions.find((s) => s.id === id);
+  if (!session || !session.history || !session.history.length) { toast('Nothing to share yet.'); return; }
+  shareText(buildTranscript(session.history));
+}
+
 function saveSession() {
   if (!history.length) return;
   const firstUser = history.find((h) => h.role === 'user');
@@ -2838,8 +2908,18 @@ function populateDashboard() {
     const arrow = document.createElement('span');
     arrow.className = 'dash-history-arrow';
     arrow.textContent = '\u203a';
+    const shareBtn = document.createElement('button');
+    shareBtn.className = 'dash-share-btn';
+    shareBtn.textContent = '\ud83d\udd17';
+    shareBtn.setAttribute('aria-label', 'Share conversation');
+    shareBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (historyEditMode) return;
+      shareSession(s.id);
+    });
     li.appendChild(check);
     li.appendChild(span);
+    li.appendChild(shareBtn);
     li.appendChild(arrow);
     li.addEventListener('click', () => {
       if (historyEditMode) {
@@ -2959,6 +3039,7 @@ function init() {
   el['btn-reset-groq'].addEventListener('click', () => resetModel('groq'));
   el['btn-reset-openrouter'].addEventListener('click', () => resetModel('openrouter'));
   if (el['btn-memory']) el['btn-memory'].addEventListener('click', openMemory);
+  el['btn-share'].addEventListener('click', shareCurrentConversation);
   el['btn-new'].addEventListener('click', startNewConversation);
   if (el['btn-memory-close']) el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
   if (el['btn-memory-clear']) el['btn-memory-clear'].addEventListener('click', () => {

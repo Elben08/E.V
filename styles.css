@@ -877,6 +877,21 @@ body.reply-streaming {
 }
 .dash-history-item:hover .dash-history-arrow { color: var(--cyan); }
 
+.dash-share-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  flex: 0 0 auto;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.2s, background 0.2s;
+}
+.dash-history-item:hover .dash-share-btn { color: var(--cyan); }
+.dash-share-btn:hover { background: rgba(57, 198, 255, 0.08); color: var(--cyan); }
+
 .btn-history-action {
   background: none;
   border: none;
@@ -908,6 +923,7 @@ body.reply-streaming {
 }
 .dash-history-item.editing .hist-check { display: block; }
 .dash-history-item.editing .dash-history-arrow { display: none; }
+.dash-history-item.editing .dash-share-btn { display: none; }
 .dash-history-item.selected .hist-check {
   border-color: var(--cyan);
   background: var(--cyan);
