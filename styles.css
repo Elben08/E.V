@@ -833,7 +833,20 @@ body.reply-streaming {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(57, 198, 255, 0.2) transparent;
 }
+.dash-history-list::-webkit-scrollbar { width: 5px; }
+.dash-history-list::-webkit-scrollbar-thumb {
+  background: rgba(57, 198, 255, 0.12);
+  border-radius: 8px;
+}
+.dash-history-list:hover::-webkit-scrollbar-thumb { background: rgba(57, 198, 255, 0.35); }
+.dash-history-list::-webkit-scrollbar-track { background: transparent; }
 
 .dash-history-list:empty::after {
   content: "No conversations yet.";
