@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v95';
+const APP_VERSION = 'v96';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -2756,28 +2756,55 @@ function buildTranscript(sourceHistory) {
   return lines.join('\n').trim();
 }
 
+function transcriptFileName() {
+  return 'E.V-conversation-' + new Date().toISOString().slice(0, 10) + '.txt';
+}
+
+/* Windows note: navigator.share() resolves as soon as the share flyout opens, so we can't tell
+   whether the chosen target accepted the payload, and text-only payloads are dropped by some
+   targets (e.g. Teams on Windows expects a URL/file). So: (1) prefer sharing a real .txt File
+   attachment, which targets ingest far more reliably; (2) copy the transcript to the clipboard
+   up front as a safety net so the content is never lost when a target ignores it. */
 function shareText(text) {
-  /* Native share sheet (Android/iOS) first; clipboard; then download as a .txt file. */
-  if (navigator.share) {
-    navigator.share({ title: 'E.V conversation', text: text }).catch((err) => {
+  /* Safety net: copy the transcript up front so a target that ignores the payload (Teams on
+     Windows) still leaves the content on the clipboard. Resolves true/false, never rejects. */
+  const copied = (navigator.clipboard && navigator.clipboard.writeText)
+    ? navigator.clipboard.writeText(text).then(() => true, () => false)
+    : Promise.resolve(false);
+
+  const file = typeof File !== 'undefined' ? new File([text], transcriptFileName(), { type: 'text/plain' }) : null;
+  let canFileShare = false;
+  try { canFileShare = !!(file && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) { canFileShare = false; }
+  if (canFileShare) {
+    navigator.share({ files: [file], title: 'E.V conversation' }).then(() => {
+      copied.then((ok) => toast(ok
+        ? 'Shared \u2014 also copied to clipboard (paste in Teams if it\u2019s empty).'
+        : 'Shared.'));
+    }).catch((err) => {
       if (err && err.name === 'AbortError') return; /* user dismissed the sheet */
-      fallbackShareText(text);
+      fallbackShareText(text, copied);
     });
     return;
   }
-  fallbackShareText(text);
+  if (navigator.share) {
+    navigator.share({ title: 'E.V conversation', text: text }).then(() => {
+      copied.then((ok) => toast(ok
+        ? 'Shared \u2014 also copied to clipboard (paste in Teams if it\u2019s empty).'
+        : 'Shared.'));
+    }).catch((err) => {
+      if (err && err.name === 'AbortError') return; /* user dismissed the sheet */
+      fallbackShareText(text, copied);
+    });
+    return;
+  }
+  fallbackShareText(text, copied);
 }
 
-function fallbackShareText(text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => {
-      toast('Conversation copied to clipboard.');
-    }).catch(() => {
-      downloadTranscript(text);
-    });
-  } else {
-    downloadTranscript(text);
-  }
+function fallbackShareText(text, copied) {
+  copied.then((ok) => {
+    if (ok) toast('Conversation copied to clipboard.');
+    else downloadTranscript(text);
+  });
 }
 
 function downloadTranscript(text) {
@@ -2785,7 +2812,7 @@ function downloadTranscript(text) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'E.V-conversation-' + new Date().toISOString().slice(0, 10) + '.txt';
+  a.download = transcriptFileName();
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
