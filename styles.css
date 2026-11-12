@@ -1161,6 +1161,9 @@ body.reply-streaming {
 
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 
+.share-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.share-actions .btn { width: 100%; }
+
 .test-result {
   display: block;
   margin-top: 14px;

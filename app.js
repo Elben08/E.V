@@ -129,7 +129,7 @@ const DEFAULT_SETTINGS = {
   macroWebhook: ''
 };
 
-const APP_VERSION = 'v96';
+const APP_VERSION = 'v97';
 
 function cap(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -794,6 +794,7 @@ const els = ['chat', 'text-input', 'btn-send', 'btn-attach', 'file-input', 'atta
   'btn-test', 'test-result', 'gemini-model-label', 'groq-model-label', 'openrouter-model-label', 'btn-reset-gemini', 'btn-reset-groq', 'btn-reset-openrouter',
   'btn-settings', 'btn-settings-save', 'btn-settings-cancel',
   'modal-memory', 'memory-list', 'btn-memory', 'btn-memory-clear', 'btn-memory-close', 'toast', 'btn-new', 'btn-share',
+  'modal-share', 'share-copy', 'share-download', 'share-native', 'share-close',
   'voice-overlay', 'vo-transcript', 'vo-status',
   'screen-dashboard', 'screen-chat', 'screen-voice',
   'dash-greeting-text', 'dash-history-list', 'btn-ask-now',
@@ -2760,6 +2761,46 @@ function transcriptFileName() {
   return 'E.V-conversation-' + new Date().toISOString().slice(0, 10) + '.txt';
 }
 
+let pendingShareText = '';
+
+function openShareMenu(text) {
+  if (!text) { toast('Nothing to share yet.'); return; }
+  pendingShareText = text;
+  show(el['modal-share']);
+}
+
+function closeShareMenu() {
+  pendingShareText = '';
+  hide(el['modal-share']);
+}
+
+/* Clipboard copy is the reliable path into Teams on Windows: the system share sheet can hand
+   Teams a payload but Teams drops it (it only really takes a URL), so pasting text is safest. */
+function copyTranscript(text) {
+  const done = () => toast('Conversation copied \u2014 paste with Ctrl+V in Teams.');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => legacyCopyTranscript(text, done));
+  } else {
+    legacyCopyTranscript(text, done);
+  }
+}
+
+function legacyCopyTranscript(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  if (ok) done(); else toast('Couldn\u2019t copy \u2014 use Download .txt instead.');
+}
+
 /* Windows note: navigator.share() resolves as soon as the share flyout opens, so we can't tell
    whether the chosen target accepted the payload, and text-only payloads are dropped by some
    targets (e.g. Teams on Windows expects a URL/file). So: (1) prefer sharing a real .txt File
@@ -2823,14 +2864,14 @@ function downloadTranscript(text) {
 function shareCurrentConversation() {
   if (!history.length) { toast('Nothing to share yet.'); return; }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
-  shareText(buildTranscript(history));
+  openShareMenu(buildTranscript(history));
 }
 
 function shareSession(id) {
   const sessions = loadJSON(STORAGE.sessions, []);
   const session = sessions.find((s) => s.id === id);
   if (!session || !session.history || !session.history.length) { toast('Nothing to share yet.'); return; }
-  shareText(buildTranscript(session.history));
+  openShareMenu(buildTranscript(session.history));
 }
 
 function saveSession() {
@@ -3067,6 +3108,11 @@ function init() {
   el['btn-reset-openrouter'].addEventListener('click', () => resetModel('openrouter'));
   if (el['btn-memory']) el['btn-memory'].addEventListener('click', openMemory);
   el['btn-share'].addEventListener('click', shareCurrentConversation);
+  el['share-copy'].addEventListener('click', () => { const t = pendingShareText; closeShareMenu(); copyTranscript(t); });
+  el['share-download'].addEventListener('click', () => { const t = pendingShareText; closeShareMenu(); downloadTranscript(t); });
+  el['share-native'].addEventListener('click', () => { const t = pendingShareText; closeShareMenu(); shareText(t); });
+  el['share-close'].addEventListener('click', closeShareMenu);
+  el['modal-share'].addEventListener('click', (e) => { if (e.target === el['modal-share']) closeShareMenu(); });
   el['btn-new'].addEventListener('click', startNewConversation);
   if (el['btn-memory-close']) el['btn-memory-close'].addEventListener('click', () => hide(el['modal-memory']));
   if (el['btn-memory-clear']) el['btn-memory-clear'].addEventListener('click', () => {
